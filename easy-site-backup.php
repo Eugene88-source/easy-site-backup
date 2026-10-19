@@ -20,6 +20,7 @@ define( 'ESB_DIR', plugin_dir_path( __FILE__ ) );
 
 require_once ESB_DIR . 'includes/class-esb-storage.php';
 require_once ESB_DIR . 'includes/class-esb-job.php';
+require_once ESB_DIR . 'includes/class-esb-zip-writer.php';
 require_once ESB_DIR . 'includes/class-esb-backup.php';
 
 register_activation_hook( __FILE__, array( 'ESB_Storage', 'ensure_dir' ) );

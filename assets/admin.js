@@ -124,3 +124,52 @@
 		step();
 	}
 }() );
+
+/**
+ * Вибір кількох копій і їх видалення.
+ */
+( function () {
+	'use strict';
+
+	var config = window.esbAdmin;
+	var form = document.getElementById( 'esb-bulk-form' );
+
+	if ( ! config || ! form ) {
+		return;
+	}
+
+	var selectAll = document.getElementById( 'esb-select-all' );
+	var button = document.getElementById( 'esb-bulk-delete' );
+	var boxes = Array.prototype.slice.call( form.querySelectorAll( '.esb-select' ) );
+
+	function checkedCount() {
+		return boxes.filter( function ( box ) {
+			return box.checked;
+		} ).length;
+	}
+
+	function update() {
+		var count = checkedCount();
+		button.disabled = 0 === count;
+		selectAll.checked = count > 0 && count === boxes.length;
+	}
+
+	selectAll.addEventListener( 'click', function () {
+		boxes.forEach( function ( box ) {
+			box.checked = selectAll.checked;
+		} );
+		update();
+	} );
+
+	boxes.forEach( function ( box ) {
+		box.addEventListener( 'change', update );
+	} );
+
+	form.addEventListener( 'submit', function ( event ) {
+		if ( ! window.confirm( config.i18n.bulkConfirm.replace( '%d', checkedCount() ) ) ) {
+			event.preventDefault();
+		}
+	} );
+
+	update();
+}() );

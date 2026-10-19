@@ -34,8 +34,9 @@
 	color: #d63638;
 }
 
-.esb-parts .description {
-	margin-left: 4px;
+.esb-actions a {
+	margin-right: 8px;
+	vertical-align: middle;
 }
 
 .esb-storage-note {

@@ -25,6 +25,7 @@ class ESB_Admin {
         add_action( 'admin_post_esb_create', array( __CLASS__, 'handle_create' ) );
         add_action( 'admin_post_esb_download', array( __CLASS__, 'handle_download' ) );
         add_action( 'admin_post_esb_delete', array( __CLASS__, 'handle_delete' ) );
+        add_action( 'admin_post_esb_bulk_delete', array( __CLASS__, 'handle_bulk_delete' ) );
     }
 
     public static function add_page() {
@@ -56,8 +57,10 @@ class ESB_Admin {
                 'i18n'      => array(
                     'error'         => __( 'Сталася помилка.', 'easy-site-backup' ),
                     'retry'         => __( 'Зв\'язок із сервером перервався, повторюю спробу…', 'easy-site-backup' ),
-                    'cancelConfirm' => __( 'Скасувати резервне копіювання? Уже створені частини буде видалено.', 'easy-site-backup' ),
+                    'cancelConfirm' => __( 'Скасувати резервне копіювання? Незавершений архів буде видалено.', 'easy-site-backup' ),
                     'cancelling'    => __( 'Скасування…', 'easy-site-backup' ),
+                    /* translators: %d: кількість вибраних копій */
+                    'bulkConfirm'   => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
                 ),
             )
         );
@@ -133,51 +136,69 @@ class ESB_Admin {
             <?php if ( empty( $jobs ) ) : ?>
                 <p><?php esc_html_e( 'Резервних копій ще немає.', 'easy-site-backup' ); ?></p>
             <?php else : ?>
-                <table class="widefat striped">
-                    <thead>
-                        <tr>
-                            <th><?php esc_html_e( 'Дата', 'easy-site-backup' ); ?></th>
-                            <th><?php esc_html_e( 'Тип', 'easy-site-backup' ); ?></th>
-                            <th><?php esc_html_e( 'Статус', 'easy-site-backup' ); ?></th>
-                            <th><?php esc_html_e( 'Розмір', 'easy-site-backup' ); ?></th>
-                            <th><?php esc_html_e( 'Файли', 'easy-site-backup' ); ?></th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ( $jobs as $job ) : ?>
+                <form id="esb-bulk-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <input type="hidden" name="action" value="esb_bulk_delete">
+                    <?php wp_nonce_field( 'esb_bulk_delete' ); ?>
+
+                    <div class="tablenav top">
+                        <button type="submit" id="esb-bulk-delete" class="button" disabled>
+                            <?php esc_html_e( 'Видалити вибрані', 'easy-site-backup' ); ?>
+                        </button>
+                    </div>
+
+                    <table class="wp-list-table widefat striped">
+                        <thead>
                             <tr>
-                                <td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $job->data['created'] ) ); ?></td>
-                                <td><?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?></td>
-                                <td>
-                                    <?php echo esc_html( self::status_label( $job ) ); ?>
-                                    <?php if ( $job->data['error'] ) : ?>
-                                        <br><span class="esb-error-text"><?php echo esc_html( $job->data['error'] ); ?></span>
-                                    <?php endif; ?>
+                                <td class="manage-column check-column">
+                                    <label class="screen-reader-text" for="esb-select-all"><?php esc_html_e( 'Вибрати всі', 'easy-site-backup' ); ?></label>
+                                    <input type="checkbox" id="esb-select-all">
                                 </td>
-                                <td><?php echo 'done' === $job->data['status'] ? esc_html( size_format( $job->size(), 1 ) ) : '—'; ?></td>
-                                <td class="esb-parts">
-                                    <?php foreach ( $job->data['parts'] as $part ) : ?>
-                                        <a href="<?php echo esc_url( self::download_url( $job->id, $part['name'] ) ); ?>"><?php echo esc_html( $part['name'] ); ?></a>
-                                        <span class="description">(<?php echo esc_html( size_format( $part['size'], 1 ) ); ?>)</span><br>
-                                    <?php endforeach; ?>
-                                    <?php if ( file_exists( $job->path( 'log.txt' ) ) ) : ?>
-                                        <a href="<?php echo esc_url( self::download_url( $job->id, 'log.txt' ) ); ?>"><?php esc_html_e( 'Лог', 'easy-site-backup' ); ?></a>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-                                        onsubmit="return confirm('<?php echo esc_js( __( 'Видалити цю резервну копію?', 'easy-site-backup' ) ); ?>');">
-                                        <input type="hidden" name="action" value="esb_delete">
-                                        <input type="hidden" name="id" value="<?php echo esc_attr( $job->id ); ?>">
-                                        <?php wp_nonce_field( 'esb_delete_' . $job->id ); ?>
-                                        <button type="submit" class="button-link button-link-delete"><?php esc_html_e( 'Видалити', 'easy-site-backup' ); ?></button>
-                                    </form>
-                                </td>
+                                <th><?php esc_html_e( 'Дата', 'easy-site-backup' ); ?></th>
+                                <th><?php esc_html_e( 'Тип', 'easy-site-backup' ); ?></th>
+                                <th><?php esc_html_e( 'Статус', 'easy-site-backup' ); ?></th>
+                                <th><?php esc_html_e( 'Розмір', 'easy-site-backup' ); ?></th>
+                                <th><?php esc_html_e( 'Дії', 'easy-site-backup' ); ?></th>
                             </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            <?php foreach ( $jobs as $job ) : ?>
+                                <?php $date = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $job->data['created'] ); ?>
+                                <tr>
+                                    <th scope="row" class="check-column">
+                                        <label class="screen-reader-text" for="esb-cb-<?php echo esc_attr( $job->id ); ?>">
+                                            <?php
+                                            /* translators: %s: дата копії */
+                                            echo esc_html( sprintf( __( 'Вибрати копію від %s', 'easy-site-backup' ), $date ) );
+                                            ?>
+                                        </label>
+                                        <input type="checkbox" class="esb-select" id="esb-cb-<?php echo esc_attr( $job->id ); ?>" name="ids[]" value="<?php echo esc_attr( $job->id ); ?>">
+                                    </th>
+                                    <td><?php echo esc_html( $date ); ?></td>
+                                    <td><?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?></td>
+                                    <td>
+                                        <?php echo esc_html( self::status_label( $job ) ); ?>
+                                        <?php if ( $job->data['error'] ) : ?>
+                                            <br><span class="esb-error-text"><?php echo esc_html( $job->data['error'] ); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo $job->has_archive() ? esc_html( size_format( $job->size(), 1 ) ) : '—'; ?></td>
+                                    <td class="esb-actions">
+                                        <?php if ( $job->has_archive() ) : ?>
+                                            <a class="button button-small" href="<?php echo esc_url( self::download_url( $job->id, ESB_Storage::ARCHIVE ) ); ?>"><?php esc_html_e( 'Завантажити', 'easy-site-backup' ); ?></a>
+                                        <?php endif; ?>
+                                        <?php if ( file_exists( $job->path( 'log.txt' ) ) ) : ?>
+                                            <a href="<?php echo esc_url( self::download_url( $job->id, 'log.txt' ) ); ?>"><?php esc_html_e( 'Лог', 'easy-site-backup' ); ?></a>
+                                        <?php endif; ?>
+                                        <a class="button-link-delete" href="<?php echo esc_url( self::delete_url( $job->id ) ); ?>"
+                                            onclick="return confirm('<?php echo esc_js( __( 'Видалити цю резервну копію?', 'easy-site-backup' ) ); ?>');">
+                                            <?php esc_html_e( 'Видалити', 'easy-site-backup' ); ?>
+                                        </a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </form>
             <?php endif; ?>
 
             <p class="description esb-storage-note">
@@ -200,8 +221,10 @@ class ESB_Admin {
             $class   = 'notice-success';
             $message = __( 'Резервне копіювання запущено.', 'easy-site-backup' );
         } elseif ( 'deleted' === $notice ) {
+            $count   = isset( $_GET['count'] ) ? absint( $_GET['count'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             $class   = 'notice-success';
-            $message = __( 'Резервну копію видалено.', 'easy-site-backup' );
+            /* translators: %d: кількість видалених копій */
+            $message = sprintf( __( 'Видалено резервних копій: %d.', 'easy-site-backup' ), $count );
         } elseif ( 'error' === $notice ) {
             $key     = self::error_key();
             $class   = 'notice-error';
@@ -229,6 +252,19 @@ class ESB_Admin {
                 admin_url( 'admin-post.php' )
             ),
             'esb_download_' . $id
+        );
+    }
+
+    private static function delete_url( $id ) {
+        return wp_nonce_url(
+            add_query_arg(
+                array(
+                    'action' => 'esb_delete',
+                    'id'     => $id,
+                ),
+                admin_url( 'admin-post.php' )
+            ),
+            'esb_delete_' . $id
         );
     }
 
@@ -333,19 +369,56 @@ class ESB_Admin {
     }
 
     public static function handle_delete() {
-        $id = isset( $_POST['id'] ) ? sanitize_text_field( wp_unslash( $_POST['id'] ) ) : '';
+        $id = isset( $_GET['id'] ) ? sanitize_text_field( wp_unslash( $_GET['id'] ) ) : '';
         self::check_access( 'esb_delete_' . $id );
 
-        $active = ESB_Backup::active_job();
-        if ( $active && $active->id === $id ) {
-            self::redirect_error( __( 'Ця копія ще створюється — спочатку скасуйте її.', 'easy-site-backup' ) );
+        self::delete_backups( array( $id ) );
+    }
+
+    public static function handle_bulk_delete() {
+        self::check_access( 'esb_bulk_delete' );
+
+        $ids = isset( $_POST['ids'] ) ? array_map( 'sanitize_text_field', (array) wp_unslash( $_POST['ids'] ) ) : array();
+
+        if ( empty( $ids ) ) {
+            self::redirect_error( __( 'Не вибрано жодної резервної копії.', 'easy-site-backup' ) );
         }
 
-        if ( ! ESB_Storage::delete_dir( $id ) ) {
-            self::redirect_error( __( 'Не вдалося видалити резервну копію.', 'easy-site-backup' ) );
+        self::delete_backups( $ids );
+    }
+
+    private static function delete_backups( array $ids ) {
+        $active  = ESB_Backup::active_job();
+        $deleted = 0;
+        $failed  = 0;
+
+        foreach ( array_unique( $ids ) as $id ) {
+            // Копію, що ще створюється, спершу треба скасувати.
+            if ( $active && $active->id === $id ) {
+                $failed++;
+                continue;
+            }
+
+            if ( ESB_Storage::delete_dir( $id ) ) {
+                $deleted++;
+            } else {
+                $failed++;
+            }
         }
 
-        self::redirect( 'deleted' );
+        if ( $failed ) {
+            self::redirect_error(
+                sprintf(
+                    /* translators: 1: кількість видалених копій, 2: кількість невидалених */
+                    __( 'Видалено резервних копій: %1$d. Не вдалося видалити: %2$d.', 'easy-site-backup' ),
+                    $deleted,
+                    $failed
+                )
+            );
+        }
+
+        wp_safe_redirect( add_query_arg( array( 'esb_notice' => 'deleted', 'count' => $deleted ), admin_url( 'tools.php?page=' . self::PAGE ) ) );
+        exit;
     }
 
     private static function check_access( $nonce_action ) {

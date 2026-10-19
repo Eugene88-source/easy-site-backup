@@ -3,7 +3,7 @@
  * Захищене сховище резервних копій.
  *
  * Кожна копія лежить в окремій теці з випадковою назвою:
- * esb-backups/<id>/{job.json, database.sql.gz, files-001.zip, ..., manifest.json, log.txt}
+ * esb-backups/<id>/{backup.zip, job.json, log.txt}
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -19,15 +19,12 @@ class ESB_Storage {
      */
     const ID_PATTERN = '/^\d{8}-\d{6}-[a-z0-9]{16}$/';
 
-    /**
-     * Частини резервної копії.
-     */
-    const PART_PATTERN = '/^(database\.sql\.gz|files-\d{3}\.zip)$/';
+    const ARCHIVE = 'backup.zip';
 
     /**
      * Файли, які дозволено завантажувати.
      */
-    const DOWNLOAD_PATTERN = '/^(database\.sql\.gz|files-\d{3}\.zip|manifest\.json|log\.txt)$/';
+    const DOWNLOAD_PATTERN = '/^(backup\.zip|log\.txt)$/';
 
     public static function dir() {
         $uploads = wp_upload_dir( null, false );
@@ -96,27 +93,6 @@ class ESB_Storage {
         }
 
         return $dir . '/' . $name;
-    }
-
-    /**
-     * @return string[] Імена частин копії в теці, по порядку.
-     */
-    public static function part_names( $id ) {
-        $dir = self::job_dir( $id );
-
-        if ( ! $dir || ! is_dir( $dir ) ) {
-            return array();
-        }
-
-        $names = array();
-        foreach ( (array) scandir( $dir ) as $name ) {
-            if ( preg_match( self::PART_PATTERN, (string) $name ) ) {
-                $names[] = $name;
-            }
-        }
-        sort( $names );
-
-        return $names;
     }
 
     /**

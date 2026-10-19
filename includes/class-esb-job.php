@@ -52,7 +52,7 @@ class ESB_Job {
                 'finished' => 0,
                 'attempts' => 0,
                 'error'    => '',
-                'parts'    => array(),
+                'size'     => 0,
             )
         );
     }
@@ -144,6 +144,13 @@ class ESB_Job {
     }
 
     public function size() {
-        return array_sum( wp_list_pluck( $this->data['parts'], 'size' ) );
+        return isset( $this->data['size'] ) ? (int) $this->data['size'] : 0;
+    }
+
+    /**
+     * Готовий архів можна завантажити.
+     */
+    public function has_archive() {
+        return 'done' === $this->data['status'] && is_file( $this->path( ESB_Storage::ARCHIVE ) );
     }
 }
