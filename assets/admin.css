@@ -1,0 +1,43 @@
+.esb-type {
+	display: block;
+	margin-bottom: 6px;
+}
+
+.esb-progress {
+	max-width: 600px;
+	margin: 16px 0 24px;
+}
+
+.esb-progress-track {
+	height: 20px;
+	overflow: hidden;
+	background: #dcdcde;
+	border-radius: 3px;
+}
+
+.esb-progress-bar {
+	width: 0;
+	height: 100%;
+	background: #2271b1;
+	transition: width 0.3s;
+}
+
+.esb-progress.esb-failed .esb-progress-bar {
+	background: #d63638;
+}
+
+.esb-progress-message {
+	font-weight: 600;
+}
+
+.esb-error-text {
+	color: #d63638;
+}
+
+.esb-parts .description {
+	margin-left: 4px;
+}
+
+.esb-storage-note {
+	margin-top: 12px;
+}

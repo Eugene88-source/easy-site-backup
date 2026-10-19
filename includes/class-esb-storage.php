@@ -1,6 +1,9 @@
 <?php
 /**
  * Захищене сховище резервних копій.
+ *
+ * Кожна копія лежить в окремій теці з випадковою назвою:
+ * esb-backups/<id>/{job.json, database.sql.gz, files-001.zip, ..., manifest.json, log.txt}
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -12,9 +15,19 @@ class ESB_Storage {
     const DIR_NAME = 'esb-backups';
 
     /**
-     * Ім'я архіву: тип, дата (UTC) і випадковий суфікс, щоб файл неможливо було вгадати.
+     * Ідентифікатор копії: дата (UTC) і випадковий суфікс, щоб теку неможливо було вгадати.
      */
-    const FILE_PATTERN = '/^esb-(full|db|files)-(\d{8}-\d{6})-[A-Za-z0-9]{16}\.zip$/';
+    const ID_PATTERN = '/^\d{8}-\d{6}-[a-z0-9]{16}$/';
+
+    /**
+     * Частини резервної копії.
+     */
+    const PART_PATTERN = '/^(database\.sql\.gz|files-\d{3}\.zip)$/';
+
+    /**
+     * Файли, які дозволено завантажувати.
+     */
+    const DOWNLOAD_PATTERN = '/^(database\.sql\.gz|files-\d{3}\.zip|manifest\.json|log\.txt)$/';
 
     public static function dir() {
         $uploads = wp_upload_dir( null, false );
@@ -55,56 +68,104 @@ class ESB_Storage {
         return $dir;
     }
 
-    public static function new_filename( $type ) {
-        return sprintf( 'esb-%s-%s-%s.zip', $type, gmdate( 'Ymd-His' ), wp_generate_password( 16, false ) );
+    public static function new_id() {
+        return gmdate( 'Ymd-His' ) . '-' . strtolower( wp_generate_password( 16, false ) );
     }
 
-    public static function is_valid_name( $name ) {
-        return is_string( $name ) && 1 === preg_match( self::FILE_PATTERN, $name );
+    public static function is_valid_id( $id ) {
+        return is_string( $id ) && 1 === preg_match( self::ID_PATTERN, $id );
     }
 
     /**
-     * Повертає повний шлях до архіву лише для коректного імені — захист від path traversal.
+     * Повертає теку копії лише для коректного ідентифікатора — захист від path traversal.
      *
      * @return string|false
      */
-    public static function path( $name ) {
-        return self::is_valid_name( $name ) ? self::dir() . '/' . $name : false;
+    public static function job_dir( $id ) {
+        return self::is_valid_id( $id ) ? self::dir() . '/' . $id : false;
     }
 
     /**
-     * @return array[] Список архівів, новіші першими.
+     * @return string|false Шлях до файлу, який дозволено завантажити.
      */
-    public static function list_backups() {
+    public static function download_path( $id, $name ) {
+        $dir = self::job_dir( $id );
+
+        if ( ! $dir || ! is_string( $name ) || ! preg_match( self::DOWNLOAD_PATTERN, $name ) ) {
+            return false;
+        }
+
+        return $dir . '/' . $name;
+    }
+
+    /**
+     * @return string[] Імена частин копії в теці, по порядку.
+     */
+    public static function part_names( $id ) {
+        $dir = self::job_dir( $id );
+
+        if ( ! $dir || ! is_dir( $dir ) ) {
+            return array();
+        }
+
+        $names = array();
+        foreach ( (array) scandir( $dir ) as $name ) {
+            if ( preg_match( self::PART_PATTERN, (string) $name ) ) {
+                $names[] = $name;
+            }
+        }
+        sort( $names );
+
+        return $names;
+    }
+
+    /**
+     * @return ESB_Job[] Усі копії, новіші першими.
+     */
+    public static function list_jobs() {
         $dir = self::dir();
 
         if ( ! is_dir( $dir ) ) {
             return array();
         }
 
-        $items = array();
-
+        $jobs = array();
         foreach ( (array) scandir( $dir ) as $name ) {
-            if ( ! preg_match( self::FILE_PATTERN, (string) $name, $matches ) ) {
-                continue;
+            $job = self::is_valid_id( (string) $name ) ? ESB_Job::load( $name ) : null;
+            if ( $job ) {
+                $jobs[] = $job;
             }
-
-            $path    = $dir . '/' . $name;
-            $items[] = array(
-                'name' => $name,
-                'type' => $matches[1],
-                'size' => filesize( $path ),
-                'time' => filemtime( $path ),
-            );
         }
 
         usort(
-            $items,
+            $jobs,
             function ( $a, $b ) {
-                return $b['time'] - $a['time'];
+                return $b->data['created'] - $a->data['created'];
             }
         );
 
-        return $items;
+        return $jobs;
+    }
+
+    public static function delete_dir( $id ) {
+        $dir = self::job_dir( $id );
+
+        if ( ! $dir || ! is_dir( $dir ) ) {
+            return false;
+        }
+
+        $names = scandir( $dir );
+        if ( ! is_array( $names ) ) {
+            return false;
+        }
+
+        // Тека копії пласка, вкладених тек у ній немає.
+        foreach ( $names as $name ) {
+            if ( '.' !== $name && '..' !== $name ) {
+                @unlink( $dir . '/' . $name ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            }
+        }
+
+        return @rmdir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
     }
 }
