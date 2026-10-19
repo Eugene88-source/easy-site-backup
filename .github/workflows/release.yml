@@ -1,0 +1,37 @@
+# Збирає easy-site-backup.zip і додає його до опублікованого релізу.
+# Сайти з плагіном завантажують саме це вкладення як оновлення.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that tag matches plugin version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          header=$(grep -m1 -oP '^\s*\*\s*Version:\s*\K[0-9.]+' easy-site-backup.php)
+          constant=$(grep -m1 -oP "define\(\s*'ESB_VERSION',\s*'\K[0-9.]+" easy-site-backup.php)
+          if [ "$tag" != "$header" ] || [ "$tag" != "$constant" ]; then
+            echo "Tag $tag does not match Version $header / ESB_VERSION $constant"
+            exit 1
+          fi
+
+      - name: Build zip
+        run: |
+          mkdir -p build/easy-site-backup
+          git archive HEAD | tar -x -C build/easy-site-backup
+          cd build && zip -rq easy-site-backup.zip easy-site-backup
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" build/easy-site-backup.zip --clobber

@@ -1,0 +1,3 @@
+# Не потрапляють у zip релізу (git archive).
+/.github export-ignore
+/.gitattributes export-ignore
