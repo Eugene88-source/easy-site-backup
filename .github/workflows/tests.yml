@@ -100,6 +100,9 @@ jobs:
       - name: Backup and restore
         run: php tests/integration/backup-restore.php "$WP_PATH"
 
+      - name: Download whole and in parts
+        run: php tests/integration/download.php "$WP_PATH"
+
       - name: Upload and restore from file
         run: php tests/integration/upload.php "$WP_PATH"
 

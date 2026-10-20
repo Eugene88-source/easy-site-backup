@@ -97,7 +97,11 @@ class ESB_Admin {
                     /* translators: %d: кількість вибраних копій */
                     'bulkConfirm'    => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
                     /* translators: %s: дата копії */
-                    'uploadSelect'   => __( 'Виберіть файл архіву (.zip).', 'easy-site-backup' ),
+                    /* translators: %d: відсоток */
+                    'downloadProgress' => __( 'Завантаження… %d%%', 'easy-site-backup' ),
+                    'downloadDone'     => __( 'Завантажено', 'easy-site-backup' ),
+                    'downloadFailed'   => __( 'Не вдалося завантажити архів: ', 'easy-site-backup' ),
+                    'uploadSelect'   => __('Виберіть файл архіву (.zip).', 'easy-site-backup' ),
                     'uploadStart'    => __( 'Підготовка…', 'easy-site-backup' ),
                     /* translators: 1: завантажено МБ, 2: усього МБ */
                     'uploadProgress' => __( 'Завантаження: %1$s з %2$s МБ', 'easy-site-backup' ),
@@ -255,7 +259,7 @@ class ESB_Admin {
                                     <td><?php echo $job->has_archive() ? esc_html( size_format( $job->size(), 1 ) ) : '—'; ?></td>
                                     <td class="esb-actions">
                                         <?php if ( $job->has_archive() ) : ?>
-                                            <a class="button button-small" href="<?php echo esc_url( self::download_url( $job->id, ESB_Storage::ARCHIVE ) ); ?>"><?php esc_html_e( 'Завантажити', 'easy-site-backup' ); ?></a>
+                                            <a class="button button-small esb-download" href="<?php echo esc_url( self::download_url( $job->id, ESB_Storage::ARCHIVE ) ); ?>" data-name="<?php echo esc_attr( 'esb-' . $job->id . '-' . ESB_Storage::ARCHIVE ); ?>" data-size="<?php echo esc_attr( $job->size() ); ?>"><?php esc_html_e( 'Завантажити', 'easy-site-backup' ); ?></a>
                                             <button type="button" class="button button-small esb-restore" data-id="<?php echo esc_attr( $job->id ); ?>" <?php disabled( $busy ); ?>><?php esc_html_e( 'Відновити', 'easy-site-backup' ); ?></button>
                                         <?php endif; ?>
                                         <?php if ( file_exists( $job->path( 'log.txt' ) ) ) : ?>
@@ -753,6 +757,25 @@ class ESB_Admin {
             'txt'  => 'text/plain; charset=utf-8',
         );
         $ext   = pathinfo( $name, PATHINFO_EXTENSION );
+        $size  = (int) filesize( $path );
+        $etag  = '"' . md5( $id . '/' . $name . '/' . $size . '/' . filemtime( $path ) ) . '"';
+
+        // Частина файлу (HTTP Range): на хостингах, що обривають довгий запит (PHP-FPM
+        // request_terminate_timeout), великий архів качається кількома короткими запитами —
+        // так робить сторінка плагіна, а також браузер, менеджер завантажень чи curl -C - при докачуванні.
+        $range = isset( $_SERVER['HTTP_RANGE'] ) ? self::parse_range( sanitize_text_field( wp_unslash( $_SERVER['HTTP_RANGE'] ) ), $size ) : null;
+        if ( null !== $range && isset( $_SERVER['HTTP_IF_RANGE'] ) && $etag !== wp_unslash( $_SERVER['HTTP_IF_RANGE'] ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- лише порівняння.
+            $range = null; // файл змінився — віддаємо цілком
+        }
+
+        if ( false === $range ) {
+            status_header( 416 );
+            header( 'Content-Range: bytes */' . $size );
+            exit;
+        }
+
+        list( $start, $end ) = null === $range ? array( 0, $size - 1 ) : $range;
+        $length              = $end - $start + 1;
 
         if ( function_exists( 'set_time_limit' ) ) {
             @set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
@@ -763,13 +786,61 @@ class ESB_Admin {
         }
 
         nocache_headers();
+        if ( null !== $range ) {
+            status_header( 206 );
+            header( 'Content-Range: bytes ' . $start . '-' . $end . '/' . $size );
+        }
         header( 'Content-Type: ' . $types[ $ext ] );
         header( 'Content-Disposition: attachment; filename="esb-' . $id . '-' . $name . '"' );
-        header( 'Content-Length: ' . filesize( $path ) );
+        header( 'Content-Length: ' . max( 0, $length ) );
+        header( 'Accept-Ranges: bytes' );
+        header( 'ETag: ' . $etag );
         header( 'X-Content-Type-Options: nosniff' );
 
-        readfile( $path );
+        $fh = fopen( $path, 'rb' );
+        if ( $fh && 0 === fseek( $fh, $start ) ) {
+            while ( $length > 0 && ! connection_aborted() ) {
+                $chunk = fread( $fh, min( MB_IN_BYTES, $length ) );
+                if ( false === $chunk || '' === $chunk ) {
+                    break;
+                }
+                echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- вміст файлу.
+                flush();
+                $length -= strlen( $chunk );
+            }
+        }
+        if ( $fh ) {
+            fclose( $fh );
+        }
         exit;
+    }
+
+    /**
+     * Один діапазон із заголовка Range: «bytes=a-b», «bytes=a-» або «bytes=-n».
+     *
+     * @return array|null|false [початок, кінець]; null — заголовок не підтримується (віддаємо весь файл);
+     *                          false — діапазон за межами файлу (416).
+     */
+    private static function parse_range( $header, $size ) {
+        // Кілька діапазонів через кому не підтримуємо — тоді, за RFC 9110, можна віддати весь файл.
+        if ( ! preg_match( '/^bytes=(\d*)-(\d*)$/', trim( $header ), $m ) || ( '' === $m[1] && '' === $m[2] ) ) {
+            return null;
+        }
+
+        if ( '' === $m[1] ) {
+            // Останні n байтів.
+            $start = max( 0, $size - (int) $m[2] );
+            $end   = $size - 1;
+        } else {
+            $start = (int) $m[1];
+            $end   = '' === $m[2] ? $size - 1 : min( (int) $m[2], $size - 1 );
+        }
+
+        if ( $start >= $size || $start > $end ) {
+            return false;
+        }
+
+        return array( $start, $end );
     }
 
     public static function handle_delete() {

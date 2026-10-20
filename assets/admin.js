@@ -316,6 +316,121 @@
 }() );
 
 /**
+ * Завантаження архіву на комп'ютер частинами (HTTP Range) прямо у файл, який вибрав користувач.
+ *
+ * Деякі хостинги (PHP-FPM з request_terminate_timeout) обривають довгий запит, і великий архів
+ * одним запитом не скачати. Частини по CHUNK байтів — короткі запити. Потрібен File System
+ * Access API (Chrome, Edge); в інших браузерах — звичайне посилання, яке сервер дозволяє докачувати.
+ */
+( function () {
+	'use strict';
+
+	var config = window.esbAdmin;
+
+	if ( ! config || ! window.showSaveFilePicker || ! window.fetch ) {
+		return;
+	}
+
+	var CHUNK = 8 * 1048576;
+	var MAX_RETRIES = 5;
+	var RETRY_DELAY = 3000;
+
+	function wait( ms ) {
+		return new Promise( function ( resolve ) {
+			setTimeout( resolve, ms );
+		} );
+	}
+
+	function fetchRange( url, start, end, retries ) {
+		return fetch( url, { credentials: 'same-origin', headers: { Range: 'bytes=' + start + '-' + end } } )
+			.then( function ( response ) {
+				if ( 206 !== response.status ) {
+					throw new Error( 'HTTP ' + response.status );
+				}
+				return response.arrayBuffer();
+			} )
+			.then( function ( buffer ) {
+				if ( buffer.byteLength !== end - start + 1 ) {
+					throw new Error( 'incomplete' );
+				}
+				return buffer;
+			} )
+			.catch( function ( error ) {
+				if ( retries >= MAX_RETRIES ) {
+					throw error;
+				}
+				return wait( RETRY_DELAY ).then( function () {
+					return fetchRange( url, start, end, retries + 1 );
+				} );
+			} );
+	}
+
+	function download( link ) {
+		var size = parseInt( link.dataset.size, 10 );
+		var label = link.textContent;
+		var writable = null;
+
+		return window.showSaveFilePicker( {
+			suggestedName: link.dataset.name,
+			types: [ { description: 'ZIP', accept: { 'application/zip': [ '.zip' ] } } ],
+		} )
+			.then( function ( handle ) {
+				return handle.createWritable();
+			} )
+			.then( function ( stream ) {
+				var offset = 0;
+				writable = stream;
+				link.classList.add( 'disabled' );
+
+				function next() {
+					if ( offset >= size ) {
+						return writable.close();
+					}
+					var end = Math.min( offset + CHUNK, size ) - 1;
+					return fetchRange( link.href, offset, end, 0 )
+						.then( function ( buffer ) {
+							return writable.write( buffer );
+						} )
+						.then( function () {
+							offset = end + 1;
+							link.textContent = config.i18n.downloadProgress.replace( '%d', Math.floor( offset / size * 100 ) );
+							return next();
+						} );
+				}
+
+				return next();
+			} )
+			.then( function () {
+				link.textContent = config.i18n.downloadDone;
+			} )
+			.catch( function ( error ) {
+				if ( 'AbortError' === error.name && ! writable ) {
+					return; // користувач закрив вікно вибору файлу
+				}
+				if ( writable ) {
+					writable.abort();
+				}
+				link.textContent = label;
+				window.alert( config.i18n.downloadFailed + error.message );
+			} )
+			.then( function () {
+				link.classList.remove( 'disabled' );
+			} );
+	}
+
+	Array.prototype.forEach.call( document.querySelectorAll( '.esb-download' ), function ( link ) {
+		link.addEventListener( 'click', function ( event ) {
+			if ( link.classList.contains( 'disabled' ) ) {
+				event.preventDefault();
+				return;
+			}
+			event.preventDefault();
+			download( link );
+		} );
+	} );
+}() );
+
+/**
  * Розклад: день тижня потрібен лише для щотижневих копій.
  */
 ( function () {
