@@ -12,7 +12,12 @@ permissions:
   contents: write
 
 jobs:
+  # Реліз лише після успішних тестів: інакше зламаний код за годину опиниться на всіх сайтах.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   package:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
