@@ -367,6 +367,7 @@ class ESB_Restore {
             $db_entry       = null;
             $files          = 0;
             $bytes          = 0;
+            $largest        = 0;
             $position       = $reader->cd_offset;
 
             while ( $entry = $reader->next_entry( $position ) ) { // phpcs:ignore WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
@@ -376,7 +377,8 @@ class ESB_Restore {
                     $db_entry = $entry;
                 } elseif ( 0 === strpos( $entry['name'], 'files/' ) && '/' !== substr( $entry['name'], -1 ) ) {
                     $files++;
-                    $bytes += $entry['size'];
+                    $bytes  += $entry['size'];
+                    $largest = max( $largest, $entry['size'] );
                 }
             }
 
@@ -400,6 +402,13 @@ class ESB_Restore {
 
         $state['has_db']    = in_array( $manifest['type'], array( 'full', 'db' ), true );
         $state['has_files'] = in_array( $manifest['type'], array( 'full', 'files' ), true );
+
+        // Дамп розпаковується повністю, а кожен файл пишеться поруч перед заміною.
+        // Місце під тимчасові таблиці не перевіряємо: дані MySQL можуть лежати на іншому диску.
+        ESB_Storage::require_space(
+            ( $state['has_db'] && $db_entry ? $db_entry['size'] : 0 ) + ( $state['has_files'] ? $largest : 0 ) + ESB_Storage::SPACE_MARGIN,
+            __( 'відновлення', 'easy-site-backup' )
+        );
 
         if ( $state['has_db'] ) {
             if ( ! $db_entry ) {

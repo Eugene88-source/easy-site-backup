@@ -22,6 +22,11 @@ class ESB_Storage {
     const ARCHIVE = 'backup.zip';
 
     /**
+     * Запас вільного місця понад оцінку: лог, стан, тимчасові файли.
+     */
+    const SPACE_MARGIN = 50 * MB_IN_BYTES;
+
+    /**
      * Файли, які дозволено завантажувати.
      */
     const DOWNLOAD_PATTERN = '/^(backup\.zip|log\.txt)$/';
@@ -121,6 +126,41 @@ class ESB_Storage {
         );
 
         return $jobs;
+    }
+
+    /**
+     * @return float|null Вільне місце на диску сховища; null — хостинг цього не повідомляє.
+     */
+    public static function free_space() {
+        // До першої копії теки сховища ще немає — тоді рахуємо за текою uploads.
+        $dir  = is_dir( self::dir() ) ? self::dir() : dirname( self::dir() );
+        $free = function_exists( 'disk_free_space' ) ? @disk_free_space( $dir ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+        // Фільтр — для хостингів із квотами, де disk_free_space() показує місце всього сервера.
+        $free = apply_filters( 'esb_free_space', false === $free ? null : $free );
+
+        return null === $free ? null : (float) $free;
+    }
+
+    /**
+     * Перевіряє, що на диску є щонайменше $bytes вільного місця.
+     *
+     * @param string $what Для чого потрібне місце — для тексту помилки.
+     */
+    public static function require_space( $bytes, $what ) {
+        $free = self::free_space();
+
+        if ( null !== $free && $free < $bytes ) {
+            throw new RuntimeException(
+                sprintf(
+                    /* translators: 1: для чого місце, 2: потрібний обсяг, 3: вільний обсяг */
+                    __( 'Недостатньо місця на диску: для %1$s потрібно щонайменше %2$s, вільно %3$s.', 'easy-site-backup' ),
+                    $what,
+                    html_entity_decode( size_format( $bytes, 1 ), ENT_QUOTES, 'UTF-8' ),
+                    html_entity_decode( size_format( $free, 1 ), ENT_QUOTES, 'UTF-8' )
+                )
+            );
+        }
     }
 
     public static function delete_dir( $id ) {

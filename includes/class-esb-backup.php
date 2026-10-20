@@ -81,6 +81,12 @@ class ESB_Backup {
             return new WP_Error( 'esb_busy', __( 'Зараз виконується відновлення сайту. Дочекайтеся його завершення.', 'easy-site-backup' ) );
         }
 
+        try {
+            ESB_Storage::require_space( ESB_Storage::SPACE_MARGIN, __( 'резервної копії', 'easy-site-backup' ) );
+        } catch ( RuntimeException $e ) {
+            return new WP_Error( 'esb_space', $e->getMessage() );
+        }
+
         $job = ESB_Job::create( $type );
         if ( is_wp_error( $job ) ) {
             return $job;
@@ -672,6 +678,9 @@ class ESB_Backup {
         $job->data['phase'] = 'files_zip';
         $job->log( sprintf( 'Знайдено файлів: %d (%s)', $count, size_format( $bytes, 1 ) ) );
         $job->save();
+
+        // Оцінка зверху: медіа майже не стискаються.
+        ESB_Storage::require_space( $bytes + ESB_Storage::SPACE_MARGIN, __( 'архіву файлів', 'easy-site-backup' ) );
     }
 
     /**
