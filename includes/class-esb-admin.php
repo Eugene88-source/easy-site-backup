@@ -41,6 +41,7 @@ class ESB_Admin {
         add_action( 'admin_post_esb_download', array( __CLASS__, 'handle_download' ) );
         add_action( 'admin_post_esb_delete', array( __CLASS__, 'handle_delete' ) );
         add_action( 'admin_post_esb_bulk_delete', array( __CLASS__, 'handle_bulk_delete' ) );
+        add_action( 'admin_post_esb_save_schedule', array( __CLASS__, 'handle_save_schedule' ) );
     }
 
     public static function add_page() {
@@ -67,8 +68,8 @@ class ESB_Admin {
             'esb-admin',
             'esbAdmin',
             array(
-                'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
-                'nonce'     => wp_create_nonce( 'esb_ajax' ),
+                'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
+                'nonce'         => wp_create_nonce( 'esb_ajax' ),
                 'activeJob'     => $active ? ESB_Backup::status( $active ) : null,
                 'activeRestore' => $restore ? ESB_Restore::status( $restore ) : null,
                 'i18n'          => array(
@@ -82,14 +83,6 @@ class ESB_Admin {
                     'restoreConfirm' => __( "Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
                 ),
             )
-        );
-    }
-
-    private static function type_labels() {
-        return array(
-            'full'  => __( 'База даних + файли', 'easy-site-backup' ),
-            'db'    => __( 'Тільки база даних', 'easy-site-backup' ),
-            'files' => __( 'Тільки файли', 'easy-site-backup' ),
         );
     }
 
@@ -109,7 +102,7 @@ class ESB_Admin {
             return;
         }
 
-        $labels  = self::type_labels();
+        $labels  = ESB_Backup::type_labels();
         $active  = ESB_Backup::active_job();
         $restore = ESB_Restore::active();
         $busy    = $active || $restore;
@@ -154,6 +147,8 @@ class ESB_Admin {
                 <button type="button" id="esb-cancel" class="button"><?php esc_html_e( 'Скасувати', 'easy-site-backup' ); ?></button>
             </div>
 
+            <?php self::render_schedule(); ?>
+
             <h2><?php esc_html_e( 'Наявні резервні копії', 'easy-site-backup' ); ?></h2>
 
             <?php if ( empty( $jobs ) ) : ?>
@@ -197,7 +192,12 @@ class ESB_Admin {
                                         <input type="checkbox" class="esb-select" id="esb-cb-<?php echo esc_attr( $job->id ); ?>" name="ids[]" value="<?php echo esc_attr( $job->id ); ?>">
                                     </th>
                                     <td><?php echo wp_kses( self::time_html( $job->data['created'] ), self::TIME_TAG ); ?></td>
-                                    <td><?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?></td>
+                                    <td>
+                                        <?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?>
+                                        <?php if ( ! empty( $job->data['scheduled'] ) ) : ?>
+                                            <br><span class="esb-scheduled"><?php esc_html_e( 'за розкладом', 'easy-site-backup' ); ?></span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td>
                                         <?php echo esc_html( self::status_label( $job ) ); ?>
                                         <?php if ( $job->data['error'] ) : ?>
@@ -238,12 +238,126 @@ class ESB_Admin {
         <?php
     }
 
+    /**
+     * Налаштування розкладу і стан запусків.
+     */
+    private static function render_schedule() {
+        global $wp_locale;
+
+        $settings = ESB_Schedule::settings();
+        $next     = wp_next_scheduled( ESB_Schedule::HOOK );
+        $last     = ESB_Schedule::last_run();
+        $last_job = $last && $last['job'] ? ESB_Job::load( $last['job'] ) : null;
+        ?>
+        <h2><?php esc_html_e( 'Розклад', 'easy-site-backup' ); ?></h2>
+
+        <form id="esb-schedule-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+            <input type="hidden" name="action" value="esb_save_schedule">
+            <?php wp_nonce_field( 'esb_save_schedule' ); ?>
+
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><?php esc_html_e( 'Автоматичні копії', 'easy-site-backup' ); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="schedule[enabled]" value="1" <?php checked( $settings['enabled'] ); ?>>
+                            <?php esc_html_e( 'Створювати резервні копії за розкладом', 'easy-site-backup' ); ?>
+                        </label>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="esb-frequency"><?php esc_html_e( 'Коли', 'easy-site-backup' ); ?></label></th>
+                    <td>
+                        <select id="esb-frequency" name="schedule[frequency]">
+                            <option value="daily" <?php selected( $settings['frequency'], 'daily' ); ?>><?php esc_html_e( 'Щодня', 'easy-site-backup' ); ?></option>
+                            <option value="weekly" <?php selected( $settings['frequency'], 'weekly' ); ?>><?php esc_html_e( 'Щотижня', 'easy-site-backup' ); ?></option>
+                        </select>
+                        <select id="esb-weekday" name="schedule[weekday]" aria-label="<?php esc_attr_e( 'День тижня', 'easy-site-backup' ); ?>" <?php echo 'weekly' === $settings['frequency'] ? '' : 'hidden'; ?>>
+                            <?php foreach ( array( 1, 2, 3, 4, 5, 6, 0 ) as $day ) : ?>
+                                <option value="<?php echo esc_attr( $day ); ?>" <?php selected( $settings['weekday'], $day ); ?>><?php echo esc_html( $wp_locale->get_weekday( $day ) ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <label for="esb-time"><?php esc_html_e( 'о', 'easy-site-backup' ); ?></label>
+                        <input type="time" id="esb-time" name="schedule[time]" value="<?php echo esc_attr( $settings['time'] ); ?>" required>
+                        <p class="description">
+                            <?php
+                            /* translators: %s: часовий пояс сайту */
+                            echo esc_html( sprintf( __( 'За часом сайту (%s).', 'easy-site-backup' ), wp_timezone_string() ) );
+                            ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="esb-schedule-type"><?php esc_html_e( 'Що копіювати', 'easy-site-backup' ); ?></label></th>
+                    <td>
+                        <select id="esb-schedule-type" name="schedule[type]">
+                            <?php foreach ( ESB_Backup::type_labels() as $type => $label ) : ?>
+                                <option value="<?php echo esc_attr( $type ); ?>" <?php selected( $settings['type'], $type ); ?>><?php echo esc_html( $label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="esb-keep"><?php esc_html_e( 'Зберігати', 'easy-site-backup' ); ?></label></th>
+                    <td>
+                        <input type="number" id="esb-keep" name="schedule[keep]" class="small-text" min="1" max="<?php echo esc_attr( ESB_Schedule::MAX_KEEP ); ?>" value="<?php echo esc_attr( $settings['keep'] ); ?>">
+                        <?php esc_html_e( 'останніх копій за розкладом', 'easy-site-backup' ); ?>
+                        <p class="description"><?php esc_html_e( 'Старіші копії за розкладом видаляються автоматично. Копії, створені вручну, не видаляються.', 'easy-site-backup' ); ?></p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="esb-notify"><?php esc_html_e( 'Лист на пошту', 'easy-site-backup' ); ?></label></th>
+                    <td>
+                        <select id="esb-notify" name="schedule[notify]">
+                            <option value="failure" <?php selected( $settings['notify'], 'failure' ); ?>><?php esc_html_e( 'Лише про помилки', 'easy-site-backup' ); ?></option>
+                            <option value="always" <?php selected( $settings['notify'], 'always' ); ?>><?php esc_html_e( 'Після кожної копії', 'easy-site-backup' ); ?></option>
+                            <option value="never" <?php selected( $settings['notify'], 'never' ); ?>><?php esc_html_e( 'Не надсилати', 'easy-site-backup' ); ?></option>
+                        </select>
+                        <input type="email" name="schedule[email]" class="regular-text" value="<?php echo esc_attr( $settings['email'] ); ?>" placeholder="<?php echo esc_attr( get_option( 'admin_email' ) ); ?>" aria-label="<?php esc_attr_e( 'Адреса для листів', 'easy-site-backup' ); ?>">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e( 'Стан', 'easy-site-backup' ); ?></th>
+                    <td>
+                        <p>
+                            <?php esc_html_e( 'Наступний запуск:', 'easy-site-backup' ); ?>
+                            <?php echo $next ? wp_kses( self::time_html( $next ), self::TIME_TAG ) : esc_html__( 'не заплановано', 'easy-site-backup' ); ?>
+                        </p>
+                        <?php if ( $last ) : ?>
+                            <p>
+                                <?php esc_html_e( 'Останній запуск:', 'easy-site-backup' ); ?>
+                                <?php echo wp_kses( self::time_html( $last['time'] ), self::TIME_TAG ); ?> —
+                                <?php if ( 'done' === $last['status'] ) : ?>
+                                    <?php esc_html_e( 'успішно', 'easy-site-backup' ); ?>
+                                <?php elseif ( 'running' === $last['status'] ) : ?>
+                                    <?php esc_html_e( 'виконується', 'easy-site-backup' ); ?>
+                                <?php else : ?>
+                                    <span class="esb-error-text"><?php echo esc_html( sprintf( /* translators: %s: текст помилки */ __( 'помилка: %s', 'easy-site-backup' ), $last['error'] ) ); ?></span>
+                                <?php endif; ?>
+                                <?php if ( $last_job && file_exists( $last_job->path( 'log.txt' ) ) ) : ?>
+                                    (<a href="<?php echo esc_url( self::download_url( $last_job->id, 'log.txt' ) ); ?>"><?php esc_html_e( 'лог', 'easy-site-backup' ); ?></a>)
+                                <?php endif; ?>
+                            </p>
+                        <?php endif; ?>
+                        <p class="description"><?php esc_html_e( 'WP-Cron спрацьовує лише тоді, коли хтось відвідує сайт, тож на сайтах з малим трафіком копія може запуститися пізніше. Для точного часу налаштуйте системний cron (див. README).', 'easy-site-backup' ); ?></p>
+                    </td>
+                </tr>
+            </table>
+
+            <?php submit_button( __( 'Зберегти розклад', 'easy-site-backup' ), 'secondary' ); ?>
+        </form>
+        <?php
+    }
+
     private static function render_notice() {
         $notice = isset( $_GET['esb_notice'] ) ? sanitize_key( wp_unslash( $_GET['esb_notice'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
         if ( 'started' === $notice ) {
             $class   = 'notice-success';
             $message = __( 'Резервне копіювання запущено.', 'easy-site-backup' );
+        } elseif ( 'schedule_saved' === $notice ) {
+            $class   = 'notice-success';
+            $message = __( 'Розклад збережено.', 'easy-site-backup' );
         } elseif ( 'deleted' === $notice ) {
             $count   = isset( $_GET['count'] ) ? absint( $_GET['count'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             $class   = 'notice-success';
@@ -452,6 +566,15 @@ class ESB_Admin {
         }
 
         self::redirect( 'started' );
+    }
+
+    public static function handle_save_schedule() {
+        self::check_access( 'esb_save_schedule' );
+
+        $input = isset( $_POST['schedule'] ) && is_array( $_POST['schedule'] ) ? wp_unslash( $_POST['schedule'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- очищається в ESB_Schedule::sanitize().
+        ESB_Schedule::save( ESB_Schedule::sanitize( $input ) );
+
+        self::redirect( 'schedule_saved' );
     }
 
     public static function handle_download() {

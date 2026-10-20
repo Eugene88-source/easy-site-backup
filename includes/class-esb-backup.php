@@ -60,10 +60,11 @@ class ESB_Backup {
     );
 
     /**
-     * @param string $type full | db | files.
+     * @param string $type      full | db | files.
+     * @param bool   $scheduled Копія за розкладом (на неї діє ротація).
      * @return ESB_Job|WP_Error
      */
-    public static function start( $type ) {
+    public static function start( $type, $scheduled = false ) {
         if ( ! in_array( $type, self::TYPES, true ) ) {
             return new WP_Error( 'esb_type', __( 'Невідомий тип резервної копії.', 'easy-site-backup' ) );
         }
@@ -85,7 +86,8 @@ class ESB_Backup {
             return $job;
         }
 
-        $job->data['phase'] = 'files' === $type ? 'files_scan' : 'db_init';
+        $job->data['phase']     = 'files' === $type ? 'files_scan' : 'db_init';
+        $job->data['scheduled'] = (bool) $scheduled;
         $job->data['zip']   = array(
             'size'    => 0,
             'cd_size' => 0,
@@ -99,11 +101,19 @@ class ESB_Backup {
             return new WP_Error( 'esb_save', $e->getMessage() );
         }
 
-        $job->log( 'Початок резервного копіювання, тип: ' . $type );
+        $job->log( 'Початок резервного копіювання, тип: ' . $type . ( $scheduled ? ' (за розкладом)' : '' ) );
         update_option( self::ACTIVE_OPTION, $job->id, false );
         wp_schedule_single_event( time() + MINUTE_IN_SECONDS, self::CRON_HOOK, array( $job->id ) );
 
         return $job;
+    }
+
+    public static function type_labels() {
+        return array(
+            'full'  => __( 'База даних + файли', 'easy-site-backup' ),
+            'db'    => __( 'Тільки база даних', 'easy-site-backup' ),
+            'files' => __( 'Тільки файли', 'easy-site-backup' ),
+        );
     }
 
     /**
@@ -336,6 +346,8 @@ class ESB_Backup {
         }
 
         delete_option( self::ACTIVE_OPTION );
+
+        do_action( 'esb_backup_finished', $job );
     }
 
     private static function finish_cancel( ESB_Job $job ) {
@@ -757,6 +769,8 @@ class ESB_Backup {
         $job->save();
 
         delete_option( self::ACTIVE_OPTION );
+
+        do_action( 'esb_backup_finished', $job );
     }
 
     private static function writer( ESB_Job $job ) {

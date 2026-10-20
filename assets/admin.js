@@ -188,6 +188,24 @@
 }() );
 
 /**
+ * Розклад: день тижня потрібен лише для щотижневих копій.
+ */
+( function () {
+	'use strict';
+
+	var frequency = document.getElementById( 'esb-frequency' );
+	var weekday = document.getElementById( 'esb-weekday' );
+
+	if ( ! frequency || ! weekday ) {
+		return;
+	}
+
+	frequency.addEventListener( 'change', function () {
+		weekday.hidden = 'weekly' !== frequency.value;
+	} );
+}() );
+
+/**
  * Вибір кількох копій і їх видалення.
  */
 ( function () {

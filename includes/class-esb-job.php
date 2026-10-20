@@ -108,10 +108,17 @@ class ESB_Job {
      * Час — за поясом сайту, з позначкою поясу (UTC, EEST, +03:00…).
      */
     public function log( $message ) {
+        file_put_contents( $this->path( 'log.txt' ), self::site_time( 'Y-m-d H:i:s' ) . '  ' . $message . "\n", FILE_APPEND | LOCK_EX );
+    }
+
+    /**
+     * Поточний час сайту з позначкою поясу.
+     */
+    public static function site_time( $format ) {
         // Нульове зміщення PHP позначає як «GMT+0000».
         $zone = 0 === wp_timezone()->getOffset( new DateTime() ) ? 'UTC' : wp_date( 'T' );
 
-        file_put_contents( $this->path( 'log.txt' ), wp_date( 'Y-m-d H:i:s' ) . ' ' . $zone . '  ' . $message . "\n", FILE_APPEND | LOCK_EX );
+        return wp_date( $format ) . ' ' . $zone;
     }
 
     /**

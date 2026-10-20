@@ -39,6 +39,15 @@
 	vertical-align: middle;
 }
 
+.esb-scheduled {
+	color: #646970;
+	font-size: 12px;
+}
+
+#esb-schedule-form .form-table td p {
+	margin-top: 4px;
+}
+
 .esb-storage-note {
 	margin-top: 12px;
 }
