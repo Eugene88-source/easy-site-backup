@@ -25,6 +25,7 @@ require_once ESB_DIR . 'includes/class-esb-zip-writer.php';
 require_once ESB_DIR . 'includes/class-esb-backup.php';
 require_once ESB_DIR . 'includes/class-esb-zip-reader.php';
 require_once ESB_DIR . 'includes/class-esb-restore.php';
+require_once ESB_DIR . 'includes/class-esb-upload.php';
 require_once ESB_DIR . 'includes/class-esb-schedule.php';
 require_once ESB_DIR . 'includes/class-esb-updater.php';
 

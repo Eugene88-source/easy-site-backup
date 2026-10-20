@@ -188,6 +188,134 @@
 }() );
 
 /**
+ * Завантаження архіву копії з комп'ютера частинами: розмір файлу не впирається в ліміти
+ * сервера на один запит, а обірвана частина надсилається повторно з тієї самої позиції.
+ */
+( function () {
+	'use strict';
+
+	var config = window.esbAdmin;
+	var input = document.getElementById( 'esb-upload-file' );
+	var button = document.getElementById( 'esb-upload-start' );
+	var box = document.getElementById( 'esb-upload-progress' );
+
+	if ( ! config || ! input || ! button || ! box ) {
+		return;
+	}
+
+	var bar = box.querySelector( '.esb-progress-bar' );
+	var message = box.querySelector( '.esb-progress-message' );
+
+	var MAX_RETRIES = 5;
+	var RETRY_DELAY = 5000;
+
+	function post( action, data ) {
+		var body = new FormData();
+		body.append( 'action', action );
+		body.append( 'nonce', config.nonce );
+		Object.keys( data ).forEach( function ( key ) {
+			if ( data[ key ] instanceof Blob ) {
+				body.append( key, data[ key ], 'chunk.bin' );
+			} else {
+				body.append( key, data[ key ] );
+			}
+		} );
+
+		return fetch( config.ajaxUrl, { method: 'POST', body: body, credentials: 'same-origin' } )
+			.then( function ( response ) {
+				return response.json();
+			} )
+			.then( function ( result ) {
+				if ( ! result.success ) {
+					throw new Error( ( result.data && result.data.message ) || config.i18n.error );
+				}
+				return result.data;
+			} );
+	}
+
+	function wait( ms ) {
+		return new Promise( function ( resolve ) {
+			setTimeout( resolve, ms );
+		} );
+	}
+
+	function mb( bytes ) {
+		return ( bytes / 1048576 ).toFixed( 1 );
+	}
+
+	function show( done, total ) {
+		bar.style.width = ( total ? Math.floor( done / total * 100 ) : 0 ) + '%';
+		message.textContent = config.i18n.uploadProgress.replace( '%1$s', mb( done ) ).replace( '%2$s', mb( total ) );
+	}
+
+	function upload( file ) {
+		var id = null;
+		var chunk = 0;
+		var offset = 0;
+		var retries = 0;
+
+		function next() {
+			if ( offset >= file.size ) {
+				message.textContent = config.i18n.uploadCheck;
+				return post( 'esb_upload_finish', { id: id } );
+			}
+
+			return post( 'esb_upload_chunk', { id: id, offset: offset, chunk: file.slice( offset, offset + chunk ) } )
+				.then(
+					function ( result ) {
+						retries = 0;
+						offset = result.received;
+						show( offset, file.size );
+						return next();
+					},
+					function ( error ) {
+						if ( retries++ >= MAX_RETRIES ) {
+							throw error;
+						}
+						message.textContent = config.i18n.retry;
+						// Та сама позиція: сервер перезапише частину, якщо вона встигла записатися.
+						return wait( RETRY_DELAY ).then( next );
+					}
+				);
+		}
+
+		button.disabled = true;
+		input.disabled = true;
+		box.hidden = false;
+		box.classList.remove( 'esb-failed' );
+		bar.style.width = '0';
+		message.textContent = config.i18n.uploadStart;
+
+		post( 'esb_upload_start', { name: file.name, size: file.size } )
+			.then( function ( result ) {
+				id = result.id;
+				chunk = result.chunk_size;
+				show( 0, file.size );
+				return next();
+			} )
+			.then( function () {
+				bar.style.width = '100%';
+				message.textContent = config.i18n.uploadDone;
+				window.location.reload();
+			} )
+			.catch( function ( error ) {
+				box.classList.add( 'esb-failed' );
+				message.textContent = error.message;
+				button.disabled = false;
+				input.disabled = false;
+			} );
+	}
+
+	button.addEventListener( 'click', function () {
+		if ( ! input.files.length ) {
+			window.alert( config.i18n.uploadSelect );
+			return;
+		}
+		upload( input.files[0] );
+	} );
+}() );
+
+/**
  * Розклад: день тижня потрібен лише для щотижневих копій.
  */
 ( function () {

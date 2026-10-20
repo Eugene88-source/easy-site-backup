@@ -37,6 +37,7 @@ foreach ( array( '', 'Europe/Kyiv' ) as $tz ) {
     );
     check( ! in_array( false, $positions, true ) && $positions[0] < $positions[1] && $positions[1] < $positions[2], 'order: new backup → backups list → schedule' );
     check( false !== strpos( $html, 'class="esb-card" id="esb-schedule"' ), 'schedule card has anchor for redirect' );
+    check( false !== strpos( $html, 'id="esb-upload-file"' ) && false !== strpos( $html, 'id="esb-upload-start"' ) && $positions[1] < strpos( $html, 'id="esb-upload-file"' ), 'upload form in backups card' );
     check( false !== strpos( $html, 'esb-restore' ) && false === strpos( $html, 'data-date' ), 'restore button without data-date' );
 
     $iso = gmdate( 'c', $job->data['created'] );

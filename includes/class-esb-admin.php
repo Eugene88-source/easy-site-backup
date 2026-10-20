@@ -32,6 +32,9 @@ class ESB_Admin {
         add_action( 'wp_ajax_esb_step', array( __CLASS__, 'ajax_step' ) );
         add_action( 'wp_ajax_esb_cancel', array( __CLASS__, 'ajax_cancel' ) );
         add_action( 'wp_ajax_esb_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
+        add_action( 'wp_ajax_esb_upload_start', array( __CLASS__, 'ajax_upload_start' ) );
+        add_action( 'wp_ajax_esb_upload_chunk', array( __CLASS__, 'ajax_upload_chunk' ) );
+        add_action( 'wp_ajax_esb_upload_finish', array( __CLASS__, 'ajax_upload_finish' ) );
 
         // Після заміни бази сесії користувача може вже не бути — кроки відновлення перевіряються токеном.
         add_action( 'wp_ajax_esb_restore_step', array( __CLASS__, 'ajax_restore_step' ) );
@@ -94,7 +97,13 @@ class ESB_Admin {
                     /* translators: %d: кількість вибраних копій */
                     'bulkConfirm'    => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
                     /* translators: %s: дата копії */
-                    'restoreConfirm' => __( "Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
+                    'uploadSelect'   => __( 'Виберіть файл архіву (.zip).', 'easy-site-backup' ),
+                    'uploadStart'    => __( 'Підготовка…', 'easy-site-backup' ),
+                    /* translators: 1: завантажено МБ, 2: усього МБ */
+                    'uploadProgress' => __( 'Завантаження: %1$s з %2$s МБ', 'easy-site-backup' ),
+                    'uploadCheck'    => __( 'Перевірка архіву…', 'easy-site-backup' ),
+                    'uploadDone'     => __( 'Архів завантажено. Оновлюю список…', 'easy-site-backup' ),
+                    'restoreConfirm' => __("Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
                 ),
             )
         );
@@ -106,6 +115,8 @@ class ESB_Admin {
                 return __( 'Готово', 'easy-site-backup' );
             case 'failed':
                 return __( 'Помилка', 'easy-site-backup' );
+            case 'uploading':
+                return __( 'Завантаження не завершено', 'easy-site-backup' );
             default:
                 return __( 'Перервано', 'easy-site-backup' );
         }
@@ -175,6 +186,17 @@ class ESB_Admin {
             <div class="esb-card">
             <h2><?php esc_html_e( 'Наявні резервні копії', 'easy-site-backup' ); ?></h2>
 
+            <div class="esb-upload">
+                <label for="esb-upload-file"><?php esc_html_e( 'Завантажити копію з комп\'ютера:', 'easy-site-backup' ); ?></label>
+                <input type="file" id="esb-upload-file" accept=".zip,application/zip">
+                <button type="button" id="esb-upload-start" class="button"><?php esc_html_e( 'Завантажити архів', 'easy-site-backup' ); ?></button>
+                <p class="description"><?php esc_html_e( 'Архів резервної копії Easy Site Backup (.zip), завантажений раніше. Після завантаження з нього можна відновити сайт — наприклад, на щойно встановленому WordPress з тією самою адресою.', 'easy-site-backup' ); ?></p>
+                <div id="esb-upload-progress" class="esb-progress" hidden>
+                    <div class="esb-progress-track"><div class="esb-progress-bar"></div></div>
+                    <p class="esb-progress-message"></p>
+                </div>
+            </div>
+
             <?php if ( empty( $jobs ) ) : ?>
                 <p><?php esc_html_e( 'Резервних копій ще немає.', 'easy-site-backup' ); ?></p>
             <?php else : ?>
@@ -217,9 +239,11 @@ class ESB_Admin {
                                     </th>
                                     <td><?php echo wp_kses( self::time_html( $job->data['created'] ), self::TIME_TAG ); ?></td>
                                     <td>
-                                        <?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?>
+                                        <?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : '—' ); ?>
                                         <?php if ( ! empty( $job->data['scheduled'] ) ) : ?>
                                             <br><span class="esb-scheduled"><?php esc_html_e( 'за розкладом', 'easy-site-backup' ); ?></span>
+                                        <?php elseif ( ! empty( $job->data['uploaded'] ) ) : ?>
+                                            <br><span class="esb-scheduled"><?php esc_html_e( 'завантажено з комп\'ютера', 'easy-site-backup' ); ?></span>
                                         <?php endif; ?>
                                     </td>
                                     <td>
@@ -595,6 +619,58 @@ class ESB_Admin {
         ESB_Backup::cancel( self::posted_id() );
 
         wp_send_json_success();
+    }
+
+    public static function ajax_upload_start() {
+        self::check_ajax();
+
+        // phpcs:disable WordPress.Security.NonceVerification.Missing -- перевірено в check_ajax().
+        $name = isset( $_POST['name'] ) ? sanitize_file_name( wp_unslash( $_POST['name'] ) ) : '';
+        $size = isset( $_POST['size'] ) ? absint( $_POST['size'] ) : 0;
+        // phpcs:enable
+
+        $job = ESB_Upload::start( $name, $size );
+        if ( is_wp_error( $job ) ) {
+            wp_send_json_error( array( 'message' => $job->get_error_message() ) );
+        }
+
+        wp_send_json_success(
+            array(
+                'id'         => $job->id,
+                'chunk_size' => ESB_Upload::chunk_size(),
+            )
+        );
+    }
+
+    public static function ajax_upload_chunk() {
+        self::check_ajax();
+
+        // phpcs:disable WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput -- перевірено в check_ajax(); tmp_name перевіряє is_uploaded_file().
+        $file   = isset( $_FILES['chunk'] ) ? $_FILES['chunk'] : null;
+        $offset = isset( $_POST['offset'] ) ? absint( $_POST['offset'] ) : 0;
+        // phpcs:enable
+
+        if ( ! $file || UPLOAD_ERR_OK !== $file['error'] || ! is_uploaded_file( $file['tmp_name'] ) ) {
+            wp_send_json_error( array( 'message' => __( 'Частину файлу не отримано. Можливо, сервер обмежує розмір запиту.', 'easy-site-backup' ) ) );
+        }
+
+        $received = ESB_Upload::append( self::posted_id(), $offset, $file['tmp_name'] );
+        if ( is_wp_error( $received ) ) {
+            wp_send_json_error( array( 'message' => $received->get_error_message() ) );
+        }
+
+        wp_send_json_success( array( 'received' => $received ) );
+    }
+
+    public static function ajax_upload_finish() {
+        self::check_ajax();
+
+        $job = ESB_Upload::finish( self::posted_id() );
+        if ( is_wp_error( $job ) ) {
+            wp_send_json_error( array( 'message' => $job->get_error_message() ) );
+        }
+
+        wp_send_json_success( array( 'id' => $job->id ) );
     }
 
     public static function ajax_restore_start() {

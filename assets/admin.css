@@ -121,6 +121,19 @@
 	margin-top: 4px;
 }
 
+.esb-upload {
+	margin: 4px 0 16px;
+}
+
+.esb-upload label {
+	margin-right: 6px;
+	font-weight: 600;
+}
+
+.esb-upload .esb-progress {
+	margin: 10px 0 0;
+}
+
 .esb-exposed pre {
 	margin: 0 0 8px;
 	padding: 8px 12px;
