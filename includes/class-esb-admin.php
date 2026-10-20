@@ -25,6 +25,7 @@ class ESB_Admin {
 
     public static function init() {
         add_action( 'admin_menu', array( __CLASS__, 'add_page' ) );
+        add_filter( 'plugin_action_links_' . plugin_basename( ESB_FILE ), array( __CLASS__, 'action_links' ) );
         add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue' ) );
 
         add_action( 'wp_ajax_esb_start', array( __CLASS__, 'ajax_start' ) );
@@ -52,6 +53,18 @@ class ESB_Admin {
             self::PAGE,
             array( __CLASS__, 'render_page' )
         );
+    }
+
+    /**
+     * Посилання «Налаштування» в рядку плагіна на сторінці «Плагіни» — першим, як заведено.
+     */
+    public static function action_links( $links ) {
+        array_unshift(
+            $links,
+            sprintf( '<a href="%s">%s</a>', esc_url( admin_url( 'tools.php?page=' . self::PAGE ) ), esc_html__( 'Налаштування', 'easy-site-backup' ) )
+        );
+
+        return $links;
     }
 
     public static function enqueue( $hook ) {

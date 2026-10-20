@@ -53,6 +53,10 @@ foreach ( array( '', 'Europe/Kyiv' ) as $tz ) {
 update_option( 'timezone_string', $orig_tz );
 update_option( 'gmt_offset', $orig_offset );
 
+echo "== plugins page\n";
+$links = apply_filters( 'plugin_action_links_' . ESB_Updater::basename(), array( '<a href="#">Деактивувати</a>' ) );
+check( 2 === count( $links ) && false !== strpos( $links[0], 'tools.php?page=easy-site-backup' ) && false !== strpos( $links[0], '>Налаштування</a>' ), 'Settings link first: ' . $links[0] );
+
 echo "== save schedule\n";
 $orig_settings = get_option( ESB_Schedule::OPTION );
 $redirect      = null;

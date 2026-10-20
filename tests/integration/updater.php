@@ -1,7 +1,8 @@
 <?php
 /**
- * Оновлення з GitHub: плагін показує нову версію, але сам нічого не встановлює
- * й не вмикає собі автооновлення. Реліз підмінено (99.0), тож мережа до GitHub не потрібна.
+ * Оновлення з GitHub: плагін один раз вмикає собі автооновлення, поважає вимкнене адміністратором,
+ * а щогодинна перевірка встановлює нову версію лише за ввімкненого автооновлення.
+ * Реліз підмінено (99.0), а завантаження заблоковано, тож мережа до GitHub не потрібна.
  *
  * Запуск: php tests/integration/updater.php /path/to/wordpress
  */
@@ -10,27 +11,35 @@ require __DIR__ . '/bootstrap.php';
 
 $file      = ESB_Updater::basename();
 $orig_auto = get_site_option( 'auto_update_plugins', array() );
-$orig_flag = get_site_option( ESB_Updater::AUTO_UPDATE_FLAG );
+$orig_on   = get_site_option( ESB_Updater::AUTO_UPDATE_ON );
+$orig_old  = get_site_option( ESB_Updater::OLD_AUTO_UPDATE_FLAG );
 $version   = get_plugin_data( WP_PLUGIN_DIR . '/' . $file, false, false )['Version'];
 
-echo "== auto-update\n";
-check( ! method_exists( 'ESB_Updater', 'enable_auto_update_once' ), 'plugin no longer enables auto-update for itself' );
-
-// Сайт після версії, яка сама ввімкнула автооновлення.
-update_site_option( 'auto_update_plugins', array_merge( (array) $orig_auto, array( $file ) ) );
-update_site_option( ESB_Updater::AUTO_UPDATE_FLAG, 1 );
-ESB_Updater::disable_auto_update_once();
-check( ! in_array( $file, (array) get_site_option( 'auto_update_plugins' ), true ), 'auto-update enabled by old version is turned off' );
-check( false === get_site_option( ESB_Updater::AUTO_UPDATE_FLAG ), 'migration flag removed' );
-
-// Увімкнене адміністратором (без позначки) не чіпаємо.
-update_site_option( 'auto_update_plugins', array( $file ) );
-ESB_Updater::disable_auto_update_once();
-check( in_array( $file, (array) get_site_option( 'auto_update_plugins' ), true ), 'auto-update enabled by admin is kept' );
-update_site_option( 'auto_update_plugins', $orig_auto );
-if ( $orig_flag ) {
-    update_site_option( ESB_Updater::AUTO_UPDATE_FLAG, $orig_flag );
+function auto_update_on() {
+    return in_array( ESB_Updater::basename(), (array) get_site_option( 'auto_update_plugins', array() ), true );
 }
+
+function set_auto_update( $on ) {
+    $plugins = array_diff( (array) get_site_option( 'auto_update_plugins', array() ), array( ESB_Updater::basename() ) );
+    if ( $on ) {
+        $plugins[] = ESB_Updater::basename();
+    }
+    update_site_option( 'auto_update_plugins', array_values( $plugins ) );
+}
+
+echo "== enable once\n";
+// Сайт після 0.4.4: автооновлення вимкнене, позначок немає.
+set_auto_update( false );
+delete_site_option( ESB_Updater::AUTO_UPDATE_ON );
+update_site_option( ESB_Updater::OLD_AUTO_UPDATE_FLAG, 1 );
+ESB_Updater::enable_auto_update_once();
+check( auto_update_on(), 'auto-update turned on' );
+check( (bool) get_site_option( ESB_Updater::AUTO_UPDATE_ON ), 'flag set' );
+check( false === get_site_option( ESB_Updater::OLD_AUTO_UPDATE_FLAG ), 'old flag removed' );
+
+set_auto_update( false ); // адміністратор вимкнув
+ESB_Updater::enable_auto_update_once();
+check( ! auto_update_on(), 'auto-update disabled by admin stays off' );
 
 echo "== hourly check\n";
 $fake = array(
@@ -46,32 +55,42 @@ add_filter(
         return $fake;
     }
 );
-// Старий transient без нашої версії: щогодинна перевірка має змусити WordPress перевірити знову.
-set_site_transient( 'update_plugins', (object) array( 'last_checked' => time(), 'response' => array(), 'no_update' => array(), 'checked' => array() ) );
 
-$installs = 0;
+$downloads = array();
 add_filter(
     'upgrader_pre_download',
-    function ( $reply ) use ( &$installs ) {
-        $installs++;
-        return new WP_Error( 'test', 'blocked' );
-    }
+    function ( $reply, $package ) use ( &$downloads ) {
+        $downloads[] = $package;
+        return new WP_Error( 'test', 'download blocked by test' );
+    },
+    10,
+    2
 );
 
-ESB_Updater::hourly_check();
+// Старий список оновлень без нашої версії: перевірка має змусити WordPress перевірити знову.
+set_site_transient( 'update_plugins', (object) array( 'last_checked' => time(), 'response' => array(), 'no_update' => array(), 'checked' => array() ) );
+
+ESB_Updater::hourly_check(); // автооновлення вимкнене
 $updates = get_site_transient( 'update_plugins' );
-$offered = isset( $updates->response[ $file ] ) ? $updates->response[ $file ] : null;
-check( $offered && '99.0' === $offered->new_version, 'update 99.0 shown on Plugins page' );
-check( 0 === $installs, 'nothing downloaded or installed' );
-wp_clean_plugins_cache( false ); // false: не видаляти список оновлень, він потрібен далі.
-check( get_plugin_data( WP_PLUGIN_DIR . '/' . $file, false, false )['Version'] === $version, "installed version unchanged ($version)" );
+check( isset( $updates->response[ $file ] ) && '99.0' === $updates->response[ $file ]->new_version, 'update 99.0 shown' );
+check( 0 === count( $downloads ), 'auto-update off → nothing downloaded' );
 
-// Повторна перевірка не смикає WordPress, якщо версія вже відома.
-$checked = $updates->last_checked;
-sleep( 1 );
+set_auto_update( true );
 ESB_Updater::hourly_check();
-check( get_site_transient( 'update_plugins' )->last_checked === $checked, 'known version → no extra update check' );
+check( 1 === count( $downloads ) && $fake['package'] === $downloads[0], 'auto-update on → release package downloaded once' );
+check( false === get_option( 'auto_updater.lock' ), 'auto_updater lock released' );
+wp_clean_plugins_cache( false );
+check( get_plugin_data( WP_PLUGIN_DIR . '/' . $file, false, false )['Version'] === $version, "installed version unchanged after blocked download ($version)" );
 
+echo "== cleanup\n";
+update_site_option( 'auto_update_plugins', $orig_auto );
+foreach ( array( ESB_Updater::AUTO_UPDATE_ON => $orig_on, ESB_Updater::OLD_AUTO_UPDATE_FLAG => $orig_old ) as $name => $value ) {
+    if ( false === $value ) {
+        delete_site_option( $name );
+    } else {
+        update_site_option( $name, $value );
+    }
+}
 delete_site_transient( 'update_plugins' );
 
 finish();
