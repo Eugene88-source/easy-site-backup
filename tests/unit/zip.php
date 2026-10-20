@@ -14,6 +14,7 @@ function __( $text ) {
 }
 
 require dirname( __DIR__ ) . '/lib.php';
+require dirname( __DIR__, 2 ) . '/includes/class-esb-crc32.php';
 require dirname( __DIR__, 2 ) . '/includes/class-esb-zip-writer.php';
 require dirname( __DIR__, 2 ) . '/includes/class-esb-zip-reader.php';
 
@@ -129,6 +130,96 @@ try {
     check( false, 'truncated archive detected' );
 } catch ( RuntimeException $e ) {
     check( true, 'truncated archive detected: ' . $e->getMessage() );
+}
+
+// CRC32 частинами: поєднання CRC частин = CRC усього.
+$all = '';
+$crc = 0;
+foreach ( array( 1, 0, 7, 65536, 300001, 3 * MB_IN_BYTES ) as $length ) {
+    $piece = $length ? random_bytes( $length ) : '';
+    $crc   = ESB_Crc32::combine( $crc, ESB_Crc32::of( $piece ), strlen( $piece ) );
+    $all  .= $piece;
+}
+check( ESB_Crc32::of( $all ) === $crc, 'CRC32 combined from parts = CRC32 of whole' );
+
+if ( PHP_INT_SIZE >= 8 ) {
+    // Великий файл частинами: кожен «крок» — новий записувач зі збереженим станом і коротким дедлайном.
+    $big = "$dir/big.bin";
+    file_put_contents( $big, random_bytes( 5 * MB_IN_BYTES + 12345 ) );
+
+    $zip   = "$dir/large.zip";
+    $state = array( 'size' => 0, 'cd_size' => 0, 'entries' => 0 );
+
+    $writer = new ESB_Zip_Writer( $zip, "$dir/large.cd", $state );
+    $writer->add_string( 'small.txt', 'before' );
+    $entry = $writer->begin_large( 'files/big.bin', filesize( $big ), filemtime( $big ) );
+    $state = $writer->state();
+    $writer->close();
+
+    $steps = 0;
+    do {
+        $writer = new ESB_Zip_Writer( $zip, "$dir/large.cd", $state );
+        $done   = $writer->continue_large( $entry, $big, 0 ); // дедлайн уже минув — одна порція за крок
+        if ( $done ) {
+            $writer->end_large( $entry );
+        }
+        $state = $writer->state();
+        $writer->close();
+        $steps++;
+    } while ( ! $done );
+
+    // Перерваний крок: дописали порцію, але стан не зберегли — наступний крок має її перезаписати.
+    $writer = new ESB_Zip_Writer( $zip, "$dir/large.cd", $state );
+    $writer->add_string( 'after.txt', 'after' );
+    $writer->finish();
+    $writer->close();
+    check( $steps > 3, "large file written over $steps steps" );
+
+    $za = new ZipArchive();
+    check( class_exists( 'ZipArchive' ) ? true === $za->open( $zip, ZipArchive::CHECKCONS ) : true, 'archive with large entry passes ZipArchive CHECKCONS' );
+    if ( class_exists( 'ZipArchive' ) ) {
+        check( $za->getFromName( 'files/big.bin' ) === file_get_contents( $big ), 'ZipArchive reads large entry identical' );
+        $za->close();
+    }
+
+    // Розпакування частинами з коротким дедлайном.
+    $reader   = new ESB_Zip_Reader( $zip );
+    $position = $reader->cd_offset;
+    while ( $entry = $reader->next_entry( $position ) ) {
+        if ( 'files/big.bin' === $entry['name'] ) {
+            break;
+        }
+    }
+    $out   = fopen( "$dir/big.out", 'wb' );
+    $done  = 0;
+    $crc   = 0;
+    $parts = 0;
+    while ( ! $reader->extract_stored_part( $entry, $out, $done, $crc, 0 ) ) {
+        $parts++;
+    }
+    fclose( $out );
+    $reader->close();
+    check( $parts > 1 && md5_file( "$dir/big.out" ) === md5_file( $big ), "large entry extracted in parts ($parts) identical" );
+
+    // Пошкоджений байт у великому записі: CRC частин має не зійтися.
+    $fh = fopen( $zip, 'r+b' );
+    fseek( $fh, $entry['offset'] + 30 + strlen( $entry['name'] ) + 20 + 3 * MB_IN_BYTES );
+    fwrite( $fh, 'X' );
+    fclose( $fh );
+    $reader = new ESB_Zip_Reader( $zip );
+    $out    = fopen( 'php://temp', 'w+b' );
+    $done   = 0;
+    $crc    = 0;
+    try {
+        while ( ! $reader->extract_stored_part( $entry, $out, $done, $crc, 0 ) ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement
+        }
+        check( false, 'corrupt large entry detected' );
+    } catch ( RuntimeException $e ) {
+        check( false !== strpos( $e->getMessage(), 'пошкоджено' ), 'corrupt large entry detected by combined CRC' );
+    }
+    $reader->close();
+} else {
+    echo "SKIP large-file checks: 32-bit PHP\n";
 }
 
 array_map( 'unlink', glob( "$dir/*" ) );

@@ -111,16 +111,10 @@ class ESB_Zip_Writer {
         $start  = $this->offset;
         $zip64  = $size >= self::ZIP64_THRESHOLD;
         $method = $compress ? 8 : 0;
-        $needed = $zip64 ? 45 : 20;
 
         list( $time, $date ) = self::dos_time( $mtime );
 
-        // Розміри й CRC поки невідомі: пишемо нулі й виправляємо після запису даних.
-        $extra = $zip64 ? pack( 'vv', 0x0001, 16 ) . str_repeat( "\0", 16 ) : '';
-        $this->write(
-            pack( 'VvvvvvVVVvv', 0x04034b50, $needed, 0x0800, $method, $time, $date, 0, 0, 0, strlen( $name ), strlen( $extra ) )
-            . $name . $extra
-        );
+        $this->write_local_header( $name, $method, $time, $date, $zip64 );
 
         $crc     = hash_init( 'crc32b' );
         $deflate = $compress ? deflate_init( ZLIB_ENCODING_RAW, array( 'level' => 6 ) ) : null;
@@ -161,7 +155,111 @@ class ESB_Zip_Writer {
         }
 
         // hash_final() повертає CRC у big-endian, а ZIP зберігає little-endian.
-        $crc = strrev( hash_final( $crc, true ) );
+        $this->finish_entry( $start, $name, $method, $time, $date, $zip64, strrev( hash_final( $crc, true ) ), $packed, $raw );
+
+        return true;
+    }
+
+    /**
+     * Великий файл без стиснення — частинами між кроками.
+     *
+     * begin_large() пише заголовок і повертає стан запису; continue_large() дописує дані до
+     * дедлайну; end_large() завершує запис. Стан зберігається між кроками разом зі state()
+     * записувача: якщо крок переб'ють, архів обріжеться до збереженого розміру, і копіювання
+     * продовжиться з тієї самої позиції. CRC частин поєднується через ESB_Crc32 (лише 64-бітний PHP).
+     *
+     * @return array Стан запису.
+     */
+    public function begin_large( $name, $size, $mtime ) {
+        list( $time, $date ) = self::dos_time( $mtime );
+
+        $entry = array(
+            'start' => $this->offset,
+            'name'  => $name,
+            'size'  => (int) $size,
+            'done'  => 0,
+            'crc'   => 0,
+            'zip64' => $size >= self::ZIP64_THRESHOLD,
+            'time'  => $time,
+            'date'  => $date,
+        );
+
+        $this->write_local_header( $name, 0, $time, $date, $entry['zip64'] );
+
+        return $entry;
+    }
+
+    /**
+     * Дописує дані файлу до дедлайну, але щонайменше одну порцію.
+     *
+     * @return bool|null true — дописано повністю (або файл скоротився й закінчився раніше);
+     *                   false — ще не все; null — файл не читається (тоді запис треба скасувати).
+     */
+    public function continue_large( array &$entry, $path, $deadline ) {
+        $src = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        if ( ! $src ) {
+            return null;
+        }
+
+        try {
+            if ( 0 !== fseek( $src, $entry['done'] ) ) {
+                return null;
+            }
+
+            do {
+                $want = min( self::READ_BYTES, $entry['size'] - $entry['done'] );
+                if ( $want <= 0 ) {
+                    return true;
+                }
+
+                $chunk = @fread( $src, $want ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                if ( false === $chunk ) {
+                    return null;
+                }
+                if ( '' === $chunk ) {
+                    return true; // файл скоротився під час копіювання
+                }
+
+                $this->write( $chunk );
+                $entry['crc']   = ESB_Crc32::combine( $entry['crc'], ESB_Crc32::of( $chunk ), strlen( $chunk ) );
+                $entry['done'] += strlen( $chunk );
+            } while ( microtime( true ) < $deadline );
+        } finally {
+            fclose( $src );
+        }
+
+        return $entry['done'] >= $entry['size'];
+    }
+
+    public function end_large( array $entry ) {
+        $this->finish_entry( $entry['start'], $entry['name'], 0, $entry['time'], $entry['date'], $entry['zip64'], pack( 'V', $entry['crc'] ), $entry['done'], $entry['done'] );
+    }
+
+    /**
+     * Прибирає недописаний великий файл з архіву.
+     */
+    public function abort_large( array $entry ) {
+        $this->rollback( $entry['start'] );
+    }
+
+    /**
+     * Локальний заголовок запису. Розміри й CRC поки невідомі: пишемо нулі, finish_entry() їх виправить.
+     */
+    private function write_local_header( $name, $method, $time, $date, $zip64 ) {
+        $extra = $zip64 ? pack( 'vv', 0x0001, 16 ) . str_repeat( "\0", 16 ) : '';
+        $this->write(
+            pack( 'VvvvvvVVVvv', 0x04034b50, $zip64 ? 45 : 20, 0x0800, $method, $time, $date, 0, 0, 0, strlen( $name ), strlen( $extra ) )
+            . $name . $extra
+        );
+    }
+
+    /**
+     * Виправляє розміри й CRC у локальному заголовку і додає запис до центрального каталогу.
+     *
+     * @param string $crc CRC32 у little-endian (4 байти).
+     */
+    private function finish_entry( $start, $name, $method, $time, $date, $zip64, $crc, $packed, $raw ) {
+        $needed = $zip64 ? 45 : 20;
 
         if ( $zip64 ) {
             $this->patch( $start + 14, $crc . "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF" );
@@ -197,8 +295,6 @@ class ESB_Zip_Writer {
 
         $this->cd_size += strlen( $record );
         $this->entries++;
-
-        return true;
     }
 
     /**

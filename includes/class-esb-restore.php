@@ -47,6 +47,12 @@ class ESB_Restore {
 
     const MANIFEST_MAX_BYTES = 16 * MB_IN_BYTES;
 
+    /**
+     * Фази, що не діляться на частини (див. ESB_Backup::FRESH_STEP_PHASES). db_extract — заради
+     * архівів до 0.5.1, де весь дамп лежить одним database.sql.
+     */
+    const FRESH_STEP_PHASES = array( 'prepare', 'db_extract', 'finalize' );
+
     private static $lock;
 
     private static $state_path;
@@ -99,7 +105,10 @@ class ESB_Restore {
             'has_db'    => false,
             'has_files' => false,
             'db'        => array(
-                'entry'    => null,
+                // Частини дампу (записи архіву) по черзі: розпаковується й імпортується по одній.
+                'entries'  => array(),
+                'part'     => 0,
+                'done'     => 0,
                 'tables'   => array(),
                 'size'     => 0,
                 'offset'   => 0,
@@ -256,7 +265,7 @@ class ESB_Restore {
 
             case 'db_import':
                 $total   = $state['db']['size'];
-                $done    = min( $state['db']['offset'], $total );
+                $done    = min( $state['db']['done'] + $state['db']['offset'], $total );
                 $percent = self::scale( $db, $total ? $done / $total : 1 );
                 /* translators: 1: оброблений обсяг, 2: загальний обсяг */
                 $message = sprintf( __( 'База даних: %1$s з %2$s', 'easy-site-backup' ), size_format( $done, 1 ), size_format( $total, 1 ) );
@@ -305,7 +314,8 @@ class ESB_Restore {
         }
         wp_raise_memory_limit( 'admin' );
 
-        $deadline = microtime( true ) + ESB_Backup::STEP_SECONDS;
+        $started  = microtime( true );
+        $deadline = $started + ESB_Backup::step_seconds();
 
         try {
             // Лічильник скидається лише після успішного кроку, тож він рахує кроки, які вбив сервер.
@@ -315,9 +325,13 @@ class ESB_Restore {
             self::$resumed = $state['attempts'] > 1;
             self::save( $state );
 
-            while ( 'running' === $state['status'] && microtime( true ) < $deadline ) {
+            // Хоча б одна дія за крок; фази, що не діляться, — лише на початку кроку.
+            do {
+                if ( in_array( $state['phase'], self::FRESH_STEP_PHASES, true ) && microtime( true ) - $started > ESB_Backup::FRESH_STEP_SECONDS ) {
+                    break;
+                }
                 self::run_phase( $state, $deadline );
-            }
+            } while ( 'running' === $state['status'] && microtime( true ) < $deadline );
 
             $state['attempts'] = 0;
             self::save( $state );
@@ -384,7 +398,7 @@ class ESB_Restore {
 
         try {
             $manifest_entry = null;
-            $db_entry       = null;
+            $db_entries     = array();
             $files          = 0;
             $bytes          = 0;
             $largest        = 0;
@@ -393,8 +407,9 @@ class ESB_Restore {
             while ( $entry = $reader->next_entry( $position ) ) { // phpcs:ignore WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
                 if ( 'manifest.json' === $entry['name'] ) {
                     $manifest_entry = $entry;
-                } elseif ( 'database.sql' === $entry['name'] ) {
-                    $db_entry = $entry;
+                } elseif ( preg_match( '/^database(?:-(\d+))?\.sql$/', $entry['name'], $m ) ) {
+                    // database-001.sql… — частини дампу; database.sql — увесь дамп (архіви до 0.5.1).
+                    $db_entries[ isset( $m[1] ) ? (int) $m[1] : 0 ] = $entry;
                 } elseif ( 0 === strpos( $entry['name'], 'files/' ) && '/' !== substr( $entry['name'], -1 ) ) {
                     $files++;
                     $bytes  += $entry['size'];
@@ -423,16 +438,27 @@ class ESB_Restore {
         $state['has_db']    = in_array( $manifest['type'], array( 'full', 'db' ), true );
         $state['has_files'] = in_array( $manifest['type'], array( 'full', 'files' ), true );
 
-        // Дамп розпаковується повністю, а кожен файл пишеться поруч перед заміною.
+        ksort( $db_entries );
+        $db_entries = array_values( $db_entries );
+        $db_part    = 0;
+        foreach ( $db_entries as $entry ) {
+            $db_part = max( $db_part, $entry['size'] );
+        }
+
+        // Розпаковується одна частина дампу за раз, а кожен файл пишеться поруч перед заміною.
         // Місце під тимчасові таблиці не перевіряємо: дані MySQL можуть лежати на іншому диску.
         ESB_Storage::require_space(
-            ( $state['has_db'] && $db_entry ? $db_entry['size'] : 0 ) + ( $state['has_files'] ? $largest : 0 ) + ESB_Storage::SPACE_MARGIN,
+            ( $state['has_db'] ? $db_part : 0 ) + ( $state['has_files'] ? $largest : 0 ) + ESB_Storage::SPACE_MARGIN,
             __( 'відновлення', 'easy-site-backup' )
         );
 
         if ( $state['has_db'] ) {
-            if ( ! $db_entry ) {
+            if ( ! $db_entries ) {
                 throw new RuntimeException( __( 'В архіві немає дампу бази даних.', 'easy-site-backup' ) );
+            }
+
+            if ( isset( $manifest['db_parts'] ) && (int) $manifest['db_parts'] !== count( $db_entries ) ) {
+                throw new RuntimeException( __( 'В архіві бракує частин дампу бази даних.', 'easy-site-backup' ) );
             }
 
             if ( ! isset( $manifest['table_prefix'] ) || $manifest['table_prefix'] !== $wpdb->base_prefix ) {
@@ -452,8 +478,9 @@ class ESB_Restore {
                 }
             }
 
-            $state['db']['entry']  = $db_entry;
-            $state['db']['tables'] = $tables;
+            $state['db']['entries'] = $db_entries;
+            $state['db']['size']    = array_sum( wp_list_pluck( $db_entries, 'size' ) );
+            $state['db']['tables']  = $tables;
 
             // Залишки попереднього невдалого відновлення.
             self::drop_tables( self::TEMP_PREFIX, $tables );
@@ -472,13 +499,16 @@ class ESB_Restore {
      * База даних.
      */
 
+    /**
+     * Розпаковує поточну частину дампу.
+     */
     private static function db_extract( array &$state ) {
         $reader = self::reader( $state );
         $out    = null;
 
         try {
             $out = self::open( self::sql_path( $state ), 'wb' );
-            $reader->extract( $state['db']['entry'], $out );
+            $reader->extract( $state['db']['entries'][ $state['db']['part'] ], $out );
         } finally {
             if ( $out ) {
                 fclose( $out );
@@ -486,7 +516,6 @@ class ESB_Restore {
             $reader->close();
         }
 
-        $state['db']['size']   = $state['db']['entry']['size'];
         $state['db']['offset'] = 0;
         $state['phase']        = 'db_import';
         self::save( $state );
@@ -522,11 +551,21 @@ class ESB_Restore {
                 $line = fgets( $fh );
 
                 if ( false === $line ) {
+                    // Частина закінчується на межі інструкції, тож недописана інструкція — це обрив.
                     if ( '' !== trim( $statement ) ) {
                         throw new RuntimeException( __( 'Дамп бази даних обірвано.', 'easy-site-backup' ) );
                     }
 
-                    self::log( $state, 'базу даних імпортовано в тимчасові таблиці' );
+                    $db['done']  += $db['entries'][ $db['part'] ]['size'];
+                    $db['offset'] = 0;
+
+                    if ( $db['part'] + 1 < count( $db['entries'] ) ) {
+                        $db['part']++;
+                        $state['phase'] = 'db_extract';
+                        break;
+                    }
+
+                    self::log( $state, sprintf( 'базу даних імпортовано в тимчасові таблиці (частин: %d)', count( $db['entries'] ) ) );
                     $state['phase'] = $state['has_files'] ? 'files' : 'finalize';
                     break;
                 }
@@ -739,7 +778,13 @@ class ESB_Restore {
         $reader = self::reader( $state );
 
         try {
-            while ( microtime( true ) < $deadline ) {
+            do {
+                // Великий файл, що розпаковується частинами, — спершу дописуємо його.
+                if ( ! empty( $files['large'] ) ) {
+                    self::continue_large( $state, $reader, $root, $deadline );
+                    continue;
+                }
+
                 $position = $files['position'];
                 $entry    = $reader->next_entry( $position );
 
@@ -755,19 +800,33 @@ class ESB_Restore {
                     continue;
                 }
 
-                $relative             = substr( $entry['name'], strlen( 'files/' ) );
-                $files['done_bytes'] += $entry['size'];
+                $relative = substr( $entry['name'], strlen( 'files/' ) );
 
                 if ( ! self::is_safe_path( $relative ) ) {
                     $files['skipped']++;
+                    $files['done_bytes'] += $entry['size'];
                     self::log( $state, 'пропущено файл із неприпустимим шляхом: ' . $relative );
                     continue;
                 }
 
                 if ( self::is_skipped( $relative, $skip ) ) {
                     $files['skipped']++;
+                    $files['done_bytes'] += $entry['size'];
                     continue;
                 }
+
+                // Великий файл без стиснення — частинами між кроками (CRC частин — лише на 64-бітному PHP).
+                if ( 0 === $entry['method'] && $entry['size'] >= ESB_Backup::large_file_bytes() && PHP_INT_SIZE >= 8 ) {
+                    $files['large'] = array(
+                        'entry'    => $entry,
+                        'relative' => $relative,
+                        'done'     => 0,
+                        'crc'      => 0,
+                    );
+                    continue;
+                }
+
+                $files['done_bytes'] += $entry['size'];
 
                 if ( self::restore_file( $reader, $entry, $root . '/' . $relative ) ) {
                     $files['done_files']++;
@@ -775,12 +834,68 @@ class ESB_Restore {
                     $files['failed']++;
                     self::log( $state, 'не вдалося записати файл: ' . $relative );
                 }
-            }
+            } while ( microtime( true ) < $deadline );
         } finally {
             $reader->close();
         }
 
         self::save( $state );
+    }
+
+    /**
+     * Дописує частину великого файлу у тимчасовий файл поруч; коли файл готовий — підміняє наявний.
+     * Якщо крок переб'ють, тимчасовий файл обріжеться до збереженої позиції й допишеться далі.
+     */
+    private static function continue_large( array &$state, ESB_Zip_Reader $reader, $root, $deadline ) {
+        $files = &$state['files'];
+        $large = &$files['large'];
+        $path  = $root . '/' . $large['relative'];
+        $temp  = $path . '.esb-restore';
+        $size  = $large['entry']['size'];
+
+        $out = wp_mkdir_p( dirname( $path ) ) ? @fopen( $temp, 'c+b' ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        if ( ! $out || ! ftruncate( $out, $large['done'] ) || 0 !== fseek( $out, $large['done'] ) ) {
+            if ( $out ) {
+                fclose( $out );
+            }
+            @unlink( $temp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            $files['failed']++;
+            $files['done_bytes'] += $size - $large['done'];
+            self::log( $state, 'не вдалося записати файл: ' . $large['relative'] );
+            $files['large'] = null;
+            return;
+        }
+
+        $before   = $large['done'];
+        $complete = false;
+        $ok       = false;
+        try {
+            // Пошкоджений архів або брак місця зупиняють усе відновлення.
+            $complete = $reader->extract_stored_part( $large['entry'], $out, $large['done'], $large['crc'], $deadline );
+            $ok       = true;
+        } finally {
+            fclose( $out );
+            if ( ! $ok ) {
+                @unlink( $temp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            }
+        }
+
+        $files['done_bytes'] += $large['done'] - $before;
+
+        if ( ! $complete ) {
+            return;
+        }
+
+        if ( @rename( $temp, $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            @touch( $path, $large['entry']['mtime'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            $files['done_files']++;
+        } else {
+            @unlink( $temp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+            $files['failed']++;
+            self::log( $state, 'не вдалося записати файл: ' . $large['relative'] );
+        }
+
+        $files['large'] = null;
     }
 
     /**
@@ -936,8 +1051,7 @@ class ESB_Restore {
             $path = self::$state_path = self::new_state_path();
         }
 
-        $tmp = $path . '.tmp';
-        if ( false === file_put_contents( $tmp, wp_json_encode( $state ) ) || ! rename( $tmp, $path ) ) {
+        if ( ! ESB_Storage::write_atomic( $path, wp_json_encode( $state ) ) ) {
             throw new RuntimeException( __( 'Не вдалося зберегти стан відновлення. Можливо, на диску закінчилося місце.', 'easy-site-backup' ) );
         }
     }

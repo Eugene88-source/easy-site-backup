@@ -18,7 +18,7 @@ function render() {
     return ob_get_clean();
 }
 
-foreach ( array( '', 'Europe/Kyiv' ) as $tz ) {
+foreach ( array( '', esb_test_kyiv() ) as $tz ) {
     update_option( 'timezone_string', $tz );
     update_option( 'gmt_offset', 0 );
     $label = $tz ? $tz : 'UTC';

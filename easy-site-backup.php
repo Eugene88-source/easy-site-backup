@@ -21,6 +21,7 @@ define( 'ESB_DIR', plugin_dir_path( __FILE__ ) );
 
 require_once ESB_DIR . 'includes/class-esb-storage.php';
 require_once ESB_DIR . 'includes/class-esb-job.php';
+require_once ESB_DIR . 'includes/class-esb-crc32.php';
 require_once ESB_DIR . 'includes/class-esb-zip-writer.php';
 require_once ESB_DIR . 'includes/class-esb-backup.php';
 require_once ESB_DIR . 'includes/class-esb-zip-reader.php';

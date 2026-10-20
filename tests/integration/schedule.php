@@ -37,7 +37,7 @@ check( '2026-10-20 07:15' === run_utc( array( 'time' => '07:15' ), $now ), 'dail
 check( '2026-10-26 03:00' === run_utc( array( 'frequency' => 'weekly', 'weekday' => 1, 'time' => '03:00' ), $now ), 'weekly Monday → next Monday' );
 check( '2026-10-27 06:30' === run_utc( array( 'frequency' => 'weekly', 'weekday' => 2, 'time' => '06:30' ), $now ), 'weekly, same minute → +7 days' );
 
-update_option( 'timezone_string', 'Europe/Kyiv' );
+update_option( 'timezone_string', esb_test_kyiv() );
 check( '2026-10-21 00:00' === run_utc( array( 'time' => '03:00' ), $now ), 'Kyiv 03:00 in summer time = 00:00 UTC' );
 check( '2026-10-26 01:00' === run_utc( array( 'time' => '03:00' ), '2026-10-25 12:00:00 UTC' ), 'Kyiv 03:00 after DST change = 01:00 UTC' );
 update_option( 'timezone_string', '' );

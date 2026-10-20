@@ -32,6 +32,13 @@ if ( ! class_exists( 'ESB_Admin' ) ) {
 }
 
 /**
+ * Київ у базі часових поясів PHP: до 2022 року він називався Europe/Kiev (так і на PHP 7.4).
+ */
+function esb_test_kyiv() {
+    return in_array( 'Europe/Kyiv', timezone_identifiers_list(), true ) ? 'Europe/Kyiv' : 'Europe/Kiev';
+}
+
+/**
  * Ідентифікатори наявних копій — щоб наприкінці видалити лише створені тестом.
  */
 function esb_test_job_ids() {

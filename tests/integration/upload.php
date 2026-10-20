@@ -120,6 +120,7 @@ $jobs_before = count( ESB_Storage::list_jobs() );
 $bad         = upload_content( 'fake.zip', random_bytes( 200 * KB_IN_BYTES ), 64 * KB_IN_BYTES );
 check( empty( $bad['success'] ) && false !== strpos( (string) $bad['data']['message'], 'пошкоджено' ), 'random bytes rejected: ' . ( isset( $bad['data']['message'] ) ? $bad['data']['message'] : '-' ) );
 check( count( ESB_Storage::list_jobs() ) === $jobs_before, 'rejected upload removed' );
+check( array() === glob( ESB_Storage::dir() . '/*/' . ESB_Upload::PART ), 'no .part file of rejected upload left on disk' );
 
 $start = upload_request( array( 'action' => 'esb_upload_start', 'name' => 'gap.zip', 'size' => 1000 ) );
 $path  = chunk_file( str_repeat( 'x', 100 ) );

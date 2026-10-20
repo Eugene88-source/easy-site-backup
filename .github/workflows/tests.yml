@@ -103,6 +103,9 @@ jobs:
       - name: Upload and restore from file
         run: php tests/integration/upload.php "$WP_PATH"
 
+      - name: Dump parts, large files in parts, legacy archive
+        run: php tests/integration/chunked.php "$WP_PATH"
+
       - name: Server log
         if: failure()
         run: cat "$RUNNER_TEMP/server.log"

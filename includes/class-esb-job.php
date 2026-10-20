@@ -98,8 +98,7 @@ class ESB_Job {
     public function save() {
         $this->data['updated'] = time();
 
-        $tmp = $this->path( 'job.json.tmp' );
-        if ( false === file_put_contents( $tmp, wp_json_encode( $this->data ) ) || ! rename( $tmp, $this->path( 'job.json' ) ) ) {
+        if ( ! ESB_Storage::write_atomic( $this->path( 'job.json' ), wp_json_encode( $this->data ) ) ) {
             throw new RuntimeException( __( 'Не вдалося зберегти стан резервного копіювання. Можливо, на диску закінчилося місце.', 'easy-site-backup' ) );
         }
     }

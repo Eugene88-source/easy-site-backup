@@ -47,7 +47,13 @@ class ESB_Zip_Reader {
         $stat       = fstat( $fh );
         $this->size = (int) $stat['size'];
 
-        $this->read_eocd();
+        try {
+            $this->read_eocd();
+        } catch ( RuntimeException $e ) {
+            // Інакше файл лишився б відкритим до кінця запиту, і на Windows його не вдалося б видалити.
+            $this->close();
+            throw $e;
+        }
     }
 
     public function close() {
@@ -108,13 +114,7 @@ class ESB_Zip_Reader {
             throw new RuntimeException( sprintf( __( 'Непідтримуваний метод стиснення у файлі %s.', 'easy-site-backup' ), $entry['name'] ) );
         }
 
-        $local = $this->read_at( $entry['offset'], 30 );
-        if ( "PK\x03\x04" !== substr( $local, 0, 4 ) ) {
-            throw self::corrupt();
-        }
-
-        $lens = unpack( 'vname/vextra', substr( $local, 26, 4 ) );
-        if ( 0 !== fseek( $this->fh, $entry['offset'] + 30 + $lens['name'] + $lens['extra'] ) ) {
+        if ( 0 !== fseek( $this->fh, $this->data_offset( $entry ) ) ) {
             throw self::corrupt();
         }
 
@@ -153,6 +153,66 @@ class ESB_Zip_Reader {
         if ( $written !== $entry['size'] || sprintf( '%08x', $entry['crc'] ) !== hash_final( $crc ) ) {
             throw self::damaged( $entry );
         }
+    }
+
+    /**
+     * Розпаковує частину запису без стиснення (stored) — для великих файлів, які не вміщаються
+     * в один крок. Пише в $out з позиції $done до дедлайну, але щонайменше одну порцію.
+     * $done і $crc (CRC32 уже записаного) оновлюються; коли записано все, CRC і розмір звіряються.
+     *
+     * @return bool true — запис розпаковано повністю.
+     */
+    public function extract_stored_part( array $entry, $out, &$done, &$crc, $deadline ) {
+        if ( 0 !== $entry['method'] ) {
+            throw self::damaged( $entry );
+        }
+
+        if ( 0 !== fseek( $this->fh, $this->data_offset( $entry ) + $done ) ) {
+            throw self::corrupt();
+        }
+
+        do {
+            $want = min( self::READ_BYTES * 4, $entry['size'] - $done );
+            if ( $want <= 0 ) {
+                break;
+            }
+
+            $chunk = fread( $this->fh, $want );
+            if ( false === $chunk || '' === $chunk ) {
+                throw self::corrupt();
+            }
+
+            if ( strlen( $chunk ) !== fwrite( $out, $chunk ) ) {
+                throw new RuntimeException( __( 'Не вдалося записати розпакований файл. Можливо, на диску закінчилося місце.', 'easy-site-backup' ) );
+            }
+
+            $crc   = ESB_Crc32::combine( $crc, ESB_Crc32::of( $chunk ), strlen( $chunk ) );
+            $done += strlen( $chunk );
+        } while ( microtime( true ) < $deadline );
+
+        if ( $done < $entry['size'] ) {
+            return false;
+        }
+
+        if ( sprintf( '%08x', $entry['crc'] ) !== sprintf( '%08x', $crc ) ) {
+            throw self::damaged( $entry );
+        }
+
+        return true;
+    }
+
+    /**
+     * Позиція початку даних запису — після його локального заголовка.
+     */
+    private function data_offset( array $entry ) {
+        $local = $this->read_at( $entry['offset'], 30 );
+        if ( "PK\x03\x04" !== substr( $local, 0, 4 ) ) {
+            throw self::corrupt();
+        }
+
+        $lens = unpack( 'vname/vextra', substr( $local, 26, 4 ) );
+
+        return $entry['offset'] + 30 + $lens['name'] + $lens['extra'];
     }
 
     /**

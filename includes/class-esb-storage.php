@@ -131,6 +131,33 @@ class ESB_Storage {
     }
 
     /**
+     * Атомарно записує файл: спершу поруч у .tmp, потім rename() поверх.
+     *
+     * На Windows rename() поверх файлу, який саме відкрив антивірус чи індексатор, коротко
+     * відмовляє, тож пробуємо кілька разів.
+     *
+     * @return bool
+     */
+    public static function write_atomic( $path, $contents ) {
+        $tmp = $path . '.tmp';
+
+        if ( false === file_put_contents( $tmp, $contents ) ) {
+            return false;
+        }
+
+        for ( $attempt = 0; $attempt < 10; $attempt++ ) {
+            if ( @rename( $tmp, $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                return true;
+            }
+            usleep( 50000 );
+        }
+
+        @unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+        return false;
+    }
+
+    /**
      * Чи віддає вебсервер файли з теки сховища напряму (Nginx, Apache з AllowOverride None).
      *
      * Кладе в теку тестовий файл із випадковою назвою, запитує його через HTTP і одразу видаляє.

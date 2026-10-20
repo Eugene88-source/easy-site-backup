@@ -8,7 +8,13 @@
  *
  * Фази: db_init → db → archive_db → files_scan → files_zip → finalize.
  *
- * Вміст архіву: database.sql, files/… (файли сайту відносно кореня WordPress), manifest.json.
+ * Вміст архіву: database-001.sql, database-002.sql… (дамп бази частинами), files/… (файли сайту
+ * відносно кореня WordPress), manifest.json.
+ *
+ * Жодна операція не має тривати довше за крок, хоч би якою великою була база чи файл: дамп
+ * пишеться частинами по DUMP_PART_BYTES, а великі файли копіюються в архів частинами з
+ * продовженням у наступному кроці. Фази, які не діляться (пошук файлів, завершення), починаються
+ * лише на початку кроку, щоб мати весь його час.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -26,6 +32,19 @@ class ESB_Backup {
     const STEP_SECONDS = 20;
 
     /**
+     * Фази, що не діляться на частини: починаються, лише якщо від початку кроку минуло не більше
+     * FRESH_STEP_SECONDS. Інакше крок закінчується, і фаза отримує весь наступний.
+     */
+    const FRESH_STEP_PHASES = array( 'files_scan', 'finalize' );
+
+    const FRESH_STEP_SECONDS = 5;
+
+    /**
+     * Розмір частини дампу (нестиснений SQL): її стиснення в архів — коротка операція навіть на повільному хостингу.
+     */
+    const DUMP_PART_BYTES = 16 * MB_IN_BYTES;
+
+    /**
      * Скільки разів поспіль крок може перерватися, перш ніж завдання вважається невдалим.
      */
     const MAX_ATTEMPTS = 3;
@@ -33,9 +52,27 @@ class ESB_Backup {
     const ROWS_PER_QUERY = 500;
 
     /**
-     * Великі файли додаються без стиснення, щоб один файл не займав увесь крок.
+     * Великі файли додаються без стиснення і частинами між кроками (на 64-бітному PHP).
      */
     const STORE_LARGER_THAN = 64 * MB_IN_BYTES;
+
+    /**
+     * Тривалість кроку. Фільтр — для тестів і хостингів з коротшим лімітом часу.
+     */
+    public static function step_seconds() {
+        return (float) apply_filters( 'esb_step_seconds', self::STEP_SECONDS );
+    }
+
+    public static function dump_part_bytes() {
+        return (int) apply_filters( 'esb_dump_part_bytes', self::DUMP_PART_BYTES );
+    }
+
+    /**
+     * Файли від цього розміру копіюються частинами між кроками.
+     */
+    public static function large_file_bytes() {
+        return (int) apply_filters( 'esb_large_file_bytes', self::STORE_LARGER_THAN );
+    }
 
     /**
      * Уже стиснені формати додаються без повторного стиснення — це значно швидше.
@@ -230,7 +267,8 @@ class ESB_Backup {
 
             case 'archive_db':
                 $percent = $range['archive_db'];
-                $message = __( 'Додавання бази даних до архіву…', 'easy-site-backup' );
+                /* translators: 1: номер частини, 2: кількість частин */
+                $message = sprintf( __( 'Додавання бази даних до архіву: частина %1$d з %2$d', 'easy-site-backup' ), $data['db']['archived'] + 1, count( $data['db']['parts'] ) );
                 break;
 
             case 'files_scan':
@@ -285,7 +323,8 @@ class ESB_Backup {
         }
         wp_raise_memory_limit( 'admin' );
 
-        $deadline = microtime( true ) + self::STEP_SECONDS;
+        $started  = microtime( true );
+        $deadline = $started + self::step_seconds();
 
         try {
             // Лічильник скидається лише після успішного кроку, тож він рахує кроки, які вбив сервер.
@@ -294,9 +333,13 @@ class ESB_Backup {
             }
             $job->save();
 
-            while ( $job->is_running() && microtime( true ) < $deadline && ! $job->cancel_requested() ) {
+            // Хоча б одна дія за крок — інакше за дуже короткого кроку завдання не просунулося б.
+            do {
+                if ( in_array( $job->data['phase'], self::FRESH_STEP_PHASES, true ) && microtime( true ) - $started > self::FRESH_STEP_SECONDS ) {
+                    break;
+                }
                 self::run_phase( $job, $deadline );
-            }
+            } while ( $job->is_running() && microtime( true ) < $deadline && ! $job->cancel_requested() );
 
             if ( $job->cancel_requested() ) {
                 self::finish_cancel( $job );
@@ -386,7 +429,7 @@ class ESB_Backup {
             throw new RuntimeException( __( 'Не знайдено жодної таблиці бази даних.', 'easy-site-backup' ) );
         }
 
-        $path = $job->path( 'database.sql.gz' );
+        $path = self::dump_path( $job, 1 );
         $fh   = self::open( $path, 'wb' );
 
         try {
@@ -414,6 +457,11 @@ class ESB_Backup {
             'offset'    => 0,
             'bytes'     => filesize( $path ),
             'sql_bytes' => $sql_bytes,
+            // Частини дампу: номер поточної, нестиснений обсяг поточної й готових, скільки вже в архіві.
+            'part'      => 1,
+            'part_sql'  => $sql_bytes,
+            'parts'     => array(),
+            'archived'  => 0,
         );
         $job->data['phase'] = 'db';
         $job->log( sprintf( 'Таблиць для збереження: %d', count( $tables ) ) );
@@ -422,19 +470,25 @@ class ESB_Backup {
 
     private static function db_step( ESB_Job $job, $deadline ) {
         $state = &$job->data['db'];
-        $path  = $job->path( 'database.sql.gz' );
+        $path  = self::dump_path( $job, $state['part'] );
         $count = count( $state['tables'] );
+        $limit = self::dump_part_bytes();
 
         self::truncate( $path, $state['bytes'] );
         $fh = self::open( $path, 'ab' );
 
         try {
-            while ( $state['table'] < $count && microtime( true ) < $deadline ) {
+            // Порція — цілі інструкції INSERT, тож частина завжди закінчується на межі інструкції.
+            while ( $state['table'] < $count && $state['part_sql'] < $limit && microtime( true ) < $deadline ) {
+                $before = $state['sql_bytes'];
                 self::dump_chunk( $fh, $state );
+                $state['part_sql'] += $state['sql_bytes'] - $before;
             }
 
             if ( $state['table'] >= $count ) {
-                $state['sql_bytes'] += self::write_gz( $fh, "SET FOREIGN_KEY_CHECKS = 1;\n" );
+                $written             = self::write_gz( $fh, "SET FOREIGN_KEY_CHECKS = 1;\n" );
+                $state['sql_bytes'] += $written;
+                $state['part_sql']  += $written;
             }
         } finally {
             fclose( $fh );
@@ -443,12 +497,27 @@ class ESB_Backup {
         clearstatcache( true, $path );
         $state['bytes'] = filesize( $path );
 
+        // Частина заповнена або дамп закінчено — закриваємо її; далі пишемо в новий файл.
+        if ( $state['table'] >= $count || $state['part_sql'] >= $limit ) {
+            $state['parts'][] = $state['part_sql'];
+
+            if ( $state['table'] < $count ) {
+                $state['part']++;
+                $state['part_sql'] = 0;
+                $state['bytes']    = 0;
+            }
+        }
+
         if ( $state['table'] >= $count ) {
-            $job->log( 'Базу даних збережено: ' . size_format( $state['sql_bytes'], 1 ) );
+            $job->log( sprintf( 'Базу даних збережено: %s, частин: %d', size_format( $state['sql_bytes'], 1 ), count( $state['parts'] ) ) );
             $job->data['phase'] = 'archive_db';
         }
 
         $job->save();
+    }
+
+    private static function dump_path( ESB_Job $job, $part ) {
+        return $job->path( sprintf( 'database-%03d.sql.gz', $part ) );
     }
 
     /**
@@ -578,14 +647,17 @@ class ESB_Backup {
     }
 
     /**
-     * Переносить готовий дамп у архів як database.sql.
+     * Переносить у архів наступну частину дампу як database-NNN.sql — по одній за виклик.
      */
     private static function archive_db( ESB_Job $job ) {
+        $state  = &$job->data['db'];
+        $part   = $state['archived'] + 1;
+        $path   = self::dump_path( $job, $part );
         $writer = self::writer( $job );
-        $src    = self::open( 'compress.zlib://' . $job->path( 'database.sql.gz' ), 'rb' );
+        $src    = self::open( 'compress.zlib://' . $path, 'rb' );
 
         try {
-            if ( ! $writer->add_stream( $src, 'database.sql', true, $job->data['db']['sql_bytes'], time() ) ) {
+            if ( ! $writer->add_stream( $src, sprintf( 'database-%03d.sql', $part ), true, $state['parts'][ $part - 1 ], time() ) ) {
                 throw new RuntimeException( __( 'Не вдалося прочитати дамп бази даних.', 'easy-site-backup' ) );
             }
 
@@ -595,11 +667,14 @@ class ESB_Backup {
             $writer->close();
         }
 
-        $job->data['phase'] = 'db' === $job->data['type'] ? 'finalize' : 'files_scan';
+        $state['archived'] = $part;
+        if ( $part >= count( $state['parts'] ) ) {
+            $job->data['phase'] = 'db' === $job->data['type'] ? 'finalize' : 'files_scan';
+        }
         $job->save();
 
-        // Видаляємо лише після збереження стану: якщо крок переб'ють раніше, повтор знову прочитає дамп.
-        @unlink( $job->path( 'database.sql.gz' ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        // Видаляємо лише після збереження стану: якщо крок переб'ють раніше, повтор знову прочитає частину.
+        @unlink( $path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
     }
 
     /*
@@ -696,7 +771,13 @@ class ESB_Backup {
             $list = self::open( $job->path( 'filelist.txt' ), 'rb' );
             fseek( $list, $state['offset'] );
 
-            while ( microtime( true ) < $deadline ) {
+            do {
+                // Великий файл, який копіюється частинами, — спершу дописуємо його.
+                if ( ! empty( $state['large'] ) ) {
+                    self::continue_large( $job, $writer, $deadline );
+                    continue;
+                }
+
                 $line = fgets( $list );
                 if ( false === $line ) {
                     $job->log( sprintf( 'Файли додано до архіву: %d, пропущено: %d', $state['done_files'], $state['skipped'] ) );
@@ -713,7 +794,17 @@ class ESB_Backup {
                     continue;
                 }
 
-                $size     = (int) filesize( $path );
+                $size = (int) filesize( $path );
+
+                // CRC частин поєднується в 64-бітній арифметиці; на 32-бітному PHP — як раніше, цілком.
+                if ( $size >= self::large_file_bytes() && PHP_INT_SIZE >= 8 ) {
+                    $state['large'] = array(
+                        'relative' => $relative,
+                        'entry'    => $writer->begin_large( 'files/' . $relative, $size, (int) filemtime( $path ) ),
+                    );
+                    continue;
+                }
+
                 $compress = $size < self::STORE_LARGER_THAN
                     && ! in_array( strtolower( pathinfo( $relative, PATHINFO_EXTENSION ) ), self::STORE_EXTENSIONS, true );
 
@@ -725,7 +816,7 @@ class ESB_Backup {
 
                 $state['done_files']++;
                 $state['done_bytes'] += $size;
-            }
+            } while ( microtime( true ) < $deadline );
 
             $job->data['zip'] = $writer->state();
         } finally {
@@ -736,6 +827,34 @@ class ESB_Backup {
         }
 
         $job->save();
+    }
+
+    /**
+     * Дописує частину великого файлу до дедлайну; коли файл скінчився — завершує запис.
+     */
+    private static function continue_large( ESB_Job $job, ESB_Zip_Writer $writer, $deadline ) {
+        $state  = &$job->data['files'];
+        $large  = &$state['large'];
+        $before = $large['entry']['done'];
+        $result = $writer->continue_large( $large['entry'], self::site_root() . '/' . $large['relative'], $deadline );
+
+        if ( null === $result ) {
+            // Файл зник або перестав читатися посеред копіювання.
+            $writer->abort_large( $large['entry'] );
+            $state['skipped']++;
+            $state['done_bytes'] += $large['entry']['size'] - $before;
+            $job->log( 'Пропущено файл, який не вдалося прочитати: ' . $large['relative'] );
+            $state['large'] = null;
+            return;
+        }
+
+        $state['done_bytes'] += $large['entry']['done'] - $before;
+
+        if ( $result ) {
+            $writer->end_large( $large['entry'] );
+            $state['done_files']++;
+            $state['large'] = null;
+        }
     }
 
     /*
@@ -755,6 +874,7 @@ class ESB_Backup {
             'table_prefix'   => $wpdb->base_prefix,
             'charset'        => $wpdb->charset,
             'tables'         => isset( $job->data['db'] ) ? $job->data['db']['tables'] : array(),
+            'db_parts'       => isset( $job->data['db'] ) ? count( $job->data['db']['parts'] ) : 0,
             'files'          => isset( $job->data['files'] ) ? $job->data['files']['done_files'] : 0,
             'skipped_files'  => isset( $job->data['files'] ) ? $job->data['files']['skipped'] : 0,
         );
@@ -790,8 +910,10 @@ class ESB_Backup {
      * Видаляє проміжні файли: дамп, список файлів і центральний каталог архіву.
      */
     private static function remove_temp_files( ESB_Job $job ) {
-        foreach ( array( 'database.sql.gz', 'filelist.txt', 'archive.cd' ) as $name ) {
-            @unlink( $job->path( $name ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        $names = array_merge( (array) glob( $job->path( 'database-*.sql.gz' ) ), array( $job->path( 'filelist.txt' ), $job->path( 'archive.cd' ) ) );
+
+        foreach ( $names as $path ) {
+            @unlink( $path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         }
     }
 
