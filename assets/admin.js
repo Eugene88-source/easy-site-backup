@@ -113,7 +113,9 @@
 
 	Array.prototype.forEach.call( document.querySelectorAll( '.esb-restore' ), function ( button ) {
 		button.addEventListener( 'click', function () {
-			if ( ! window.confirm( config.i18n.restoreConfirm.replace( '%s', button.dataset.date ) ) ) {
+			var time = button.closest( 'tr' ).querySelector( '.esb-time' );
+
+			if ( ! window.confirm( config.i18n.restoreConfirm.replace( '%s', time ? time.textContent : '' ) ) ) {
 				return;
 			}
 
@@ -153,6 +155,35 @@
 		runBackup( config.activeJob );
 	} else if ( config.activeRestore ) {
 		runRestore( config.activeRestore );
+	}
+}() );
+
+/**
+ * Дати за часовим поясом і локаллю браузера, а не сайту.
+ */
+( function () {
+	'use strict';
+
+	if ( ! window.Intl || ! Intl.DateTimeFormat ) {
+		return;
+	}
+
+	var short = new Intl.DateTimeFormat( undefined, { dateStyle: 'long', timeStyle: 'short' } );
+	var full = new Intl.DateTimeFormat( undefined, { dateStyle: 'full', timeStyle: 'long' } );
+
+	Array.prototype.forEach.call( document.querySelectorAll( '.esb-time' ), function ( el ) {
+		var date = new Date( el.getAttribute( 'datetime' ) );
+
+		if ( ! isNaN( date.getTime() ) ) {
+			el.textContent = short.format( date );
+			el.title = full.format( date );
+		}
+	} );
+
+	// Сервер виводить підказку, лише якщо пояс сайту — UTC.
+	var hint = document.getElementById( 'esb-tz-notice' );
+	if ( hint && 0 !== new Date().getTimezoneOffset() ) {
+		hint.hidden = false;
 	}
 }() );
 

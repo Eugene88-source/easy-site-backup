@@ -11,6 +11,16 @@ class ESB_Admin {
 
     const PAGE = 'easy-site-backup';
 
+    /**
+     * Дозволений HTML для повідомлень з датою.
+     */
+    const TIME_TAG = array(
+        'time' => array(
+            'class'    => true,
+            'datetime' => true,
+        ),
+    );
+
     private static $hook = '';
 
     public static function init() {
@@ -115,6 +125,7 @@ class ESB_Admin {
 
             <?php self::render_notice(); ?>
             <?php self::render_restore_result(); ?>
+            <?php self::render_timezone_hint(); ?>
 
             <h2><?php esc_html_e( 'Нова резервна копія', 'easy-site-backup' ); ?></h2>
 
@@ -185,7 +196,7 @@ class ESB_Admin {
                                         </label>
                                         <input type="checkbox" class="esb-select" id="esb-cb-<?php echo esc_attr( $job->id ); ?>" name="ids[]" value="<?php echo esc_attr( $job->id ); ?>">
                                     </th>
-                                    <td><?php echo esc_html( $date ); ?></td>
+                                    <td><?php echo wp_kses( self::time_html( $job->data['created'] ), self::TIME_TAG ); ?></td>
                                     <td><?php echo esc_html( isset( $labels[ $job->data['type'] ] ) ? $labels[ $job->data['type'] ] : $job->data['type'] ); ?></td>
                                     <td>
                                         <?php echo esc_html( self::status_label( $job ) ); ?>
@@ -197,7 +208,7 @@ class ESB_Admin {
                                     <td class="esb-actions">
                                         <?php if ( $job->has_archive() ) : ?>
                                             <a class="button button-small" href="<?php echo esc_url( self::download_url( $job->id, ESB_Storage::ARCHIVE ) ); ?>"><?php esc_html_e( 'Завантажити', 'easy-site-backup' ); ?></a>
-                                            <button type="button" class="button button-small esb-restore" data-id="<?php echo esc_attr( $job->id ); ?>" data-date="<?php echo esc_attr( $date ); ?>" <?php disabled( $busy ); ?>><?php esc_html_e( 'Відновити', 'easy-site-backup' ); ?></button>
+                                            <button type="button" class="button button-small esb-restore" data-id="<?php echo esc_attr( $job->id ); ?>" <?php disabled( $busy ); ?>><?php esc_html_e( 'Відновити', 'easy-site-backup' ); ?></button>
                                         <?php endif; ?>
                                         <?php if ( file_exists( $job->path( 'log.txt' ) ) ) : ?>
                                             <a href="<?php echo esc_url( self::download_url( $job->id, 'log.txt' ) ); ?>"><?php esc_html_e( 'Лог', 'easy-site-backup' ); ?></a>
@@ -264,30 +275,66 @@ class ESB_Admin {
             return;
         }
 
-        $date = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $state['created'] );
+        // Повідомлення збирається вже екранованим, бо дата — HTML-елемент <time>.
+        $date = self::time_html( $state['created'] );
 
         if ( 'done' === $state['status'] ) {
             $class = 'notice-success';
             /* translators: %s: дата копії */
-            $message = sprintf( __( 'Сайт відновлено з копії від %s.', 'easy-site-backup' ), $date );
+            $message = sprintf( esc_html__( 'Сайт відновлено з копії від %s.', 'easy-site-backup' ), $date );
 
             if ( $state['files']['failed'] ) {
                 $class    = 'notice-warning';
-                $message .= ' ' . sprintf(
-                    /* translators: %d: кількість файлів */
-                    __( 'Не вдалося записати файлів: %d — подробиці в лозі копії.', 'easy-site-backup' ),
-                    $state['files']['failed']
+                $message .= ' ' . esc_html(
+                    sprintf(
+                        /* translators: %d: кількість файлів */
+                        __( 'Не вдалося записати файлів: %d — подробиці в лозі копії.', 'easy-site-backup' ),
+                        $state['files']['failed']
+                    )
                 );
             }
         } else {
             $class = 'notice-error';
             /* translators: 1: дата копії, 2: текст помилки */
-            $message = sprintf( __( 'Не вдалося відновити сайт з копії від %1$s: %2$s Подробиці — у лозі копії.', 'easy-site-backup' ), $date, $state['error'] );
+            $message = sprintf( esc_html__( 'Не вдалося відновити сайт з копії від %1$s: %2$s Подробиці — у лозі копії.', 'easy-site-backup' ), $date, esc_html( $state['error'] ) );
         }
 
-        printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( $class ), esc_html( $message ) );
+        printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( $class ), wp_kses( $message, self::TIME_TAG ) );
 
         ESB_Restore::mark_seen();
+    }
+
+    /**
+     * Дата як <time>: сервер виводить її за поясом сайту, а admin.js переписує на час браузера.
+     */
+    private static function time_html( $timestamp ) {
+        return sprintf(
+            '<time class="esb-time" datetime="%s">%s</time>',
+            esc_attr( gmdate( 'c', $timestamp ) ),
+            esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $timestamp ) )
+        );
+    }
+
+    /**
+     * Підказка, якщо пояс сайту — UTC: admin.js покаже її, коли пояс комп'ютера інший.
+     */
+    private static function render_timezone_hint() {
+        if ( 0 !== wp_timezone()->getOffset( new DateTime() ) ) {
+            return;
+        }
+        ?>
+        <div id="esb-tz-notice" class="notice notice-info" hidden>
+            <p>
+                <?php
+                printf(
+                    /* translators: %s: посилання на загальні налаштування */
+                    esc_html__( 'Часовий пояс сайту — UTC, а у вашого комп\'ютера інший. Дати на цій сторінці показано за вашим часом, а в лозі — за часом сайту. Змінити пояс сайту: %s.', 'easy-site-backup' ),
+                    '<a href="' . esc_url( admin_url( 'options-general.php' ) ) . '">' . esc_html__( 'Налаштування → Загальні', 'easy-site-backup' ) . '</a>'
+                );
+                ?>
+            </p>
+        </div>
+        <?php
     }
 
     private static function download_url( $id, $name ) {
