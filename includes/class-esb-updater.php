@@ -71,7 +71,10 @@ class ESB_Updater {
      * Вимкнене на сторінці «Плагіни» автооновлення і відкладання під час бекапу при цьому діють.
      */
     public static function hourly_check() {
-        $release = self::latest_release();
+        // Наново, а не з кешу: інакше відповідь, збережена перед самим релізом, ховала б його
+        // ще до 50 хвилин, і нова версія з'являлася б аж через дві години. Свіжа відповідь
+        // заодно оновлює кеш, з якого далі бере дані перевірка самого WordPress.
+        $release = self::latest_release( true );
         if ( ! $release || ! version_compare( $release['version'], ESB_VERSION, '>' ) ) {
             return;
         }
@@ -225,8 +228,11 @@ class ESB_Updater {
     /**
      * @return array|null Останній реліз: version, package, url, notes, date.
      */
-    private static function latest_release() {
-        $cached = get_site_transient( self::CACHE );
+    /**
+     * @param bool $fresh Запитати GitHub наново, оминаючи кеш.
+     */
+    private static function latest_release( $fresh = false ) {
+        $cached = $fresh ? false : get_site_transient( self::CACHE );
         if ( false !== $cached ) {
             return $cached ? $cached : null;
         }

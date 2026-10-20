@@ -45,16 +45,35 @@ echo "== hourly check\n";
 $fake = array(
     'version' => '99.0',
     'package' => 'https://github.com/' . ESB_Updater::REPO . '/releases/download/v99.0/easy-site-backup.zip',
-    'url'     => 'https://github.com/' . ESB_Updater::REPO . '/releases/tag/v99.0',
-    'notes'   => '- test',
-    'date'    => gmdate( 'c' ),
 );
-add_filter(
-    'pre_site_transient_' . ESB_Updater::CACHE,
-    function () use ( $fake ) {
-        return $fake;
+// Відповідь GitHub API підмінено; решта запитів (api.wordpress.org) іде як звичайно.
+$github_requests = 0;
+$github          = function ( $preempt, $args, $url ) use ( $fake, &$github_requests ) {
+    if ( false === strpos( $url, 'api.github.com/repos/' . ESB_Updater::REPO . '/releases/latest' ) ) {
+        return $preempt;
     }
-);
+    $github_requests++;
+
+    return array(
+        'headers'  => array(),
+        'cookies'  => array(),
+        'filename' => null,
+        'response' => array( 'code' => 200, 'message' => 'OK' ),
+        'body'     => wp_json_encode(
+            array(
+                'tag_name'     => 'v' . $fake['version'],
+                'html_url'     => 'https://github.com/' . ESB_Updater::REPO . '/releases/tag/v' . $fake['version'],
+                'body'         => '- test',
+                'published_at' => gmdate( 'c' ),
+                'assets'       => array( array( 'name' => ESB_Updater::ASSET, 'browser_download_url' => $fake['package'] ) ),
+            )
+        ),
+    );
+};
+add_filter( 'pre_http_request', $github, 10, 3 );
+
+// Кеш збережено перед самим релізом: у ньому ще поточна версія. Щогодинна перевірка має його оминути.
+set_site_transient( ESB_Updater::CACHE, array( 'version' => $version, 'package' => $fake['package'], 'url' => '', 'notes' => '', 'date' => '' ), ESB_Updater::CACHE_TTL );
 
 $downloads = array();
 add_filter(
@@ -72,6 +91,8 @@ set_site_transient( 'update_plugins', (object) array( 'last_checked' => time(), 
 
 ESB_Updater::hourly_check(); // автооновлення вимкнене
 $updates = get_site_transient( 'update_plugins' );
+check( $github_requests >= 1, 'stale cache bypassed: GitHub asked again' );
+check( '99.0' === get_site_transient( ESB_Updater::CACHE )['version'], 'cache refreshed with the new release' );
 check( isset( $updates->response[ $file ] ) && '99.0' === $updates->response[ $file ]->new_version, 'update 99.0 shown' );
 check( 0 === count( $downloads ), 'auto-update off → nothing downloaded' );
 
