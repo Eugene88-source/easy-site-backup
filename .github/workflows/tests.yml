@@ -109,6 +109,9 @@ jobs:
       - name: Dump parts, large files in parts, legacy archive
         run: php tests/integration/chunked.php "$WP_PATH"
 
+      - name: Storage outside the public folder
+        run: php tests/integration/private-storage.php "$WP_PATH"
+
       - name: Killed steps (backup and restore continue, data identical)
         run: php tests/integration/interrupt.php "$WP_PATH"
 

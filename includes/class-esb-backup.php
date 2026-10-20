@@ -690,7 +690,8 @@ class ESB_Backup {
      */
     private static function files_scan( ESB_Job $job ) {
         $root    = self::site_root();
-        $exclude = array( trailingslashit( ESB_Storage::dir() ) );
+        // Сховище і тека з вказівником на нього (якщо сховище поза публічною текою) — не в копію.
+        $exclude = array( trailingslashit( ESB_Storage::dir() ), trailingslashit( ESB_Storage::uploads_dir() ) );
 
         foreach ( self::EXCLUDE_DIRS as $dir ) {
             $exclude[] = $root . '/' . $dir . '/';

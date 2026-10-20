@@ -11,6 +11,10 @@ class ESB_Admin {
 
     const PAGE = 'easy-site-backup';
 
+    const RELOCATED = 'esb_storage_relocated';
+
+    const RELOCATE_SKIP = 'esb_storage_relocate_skip';
+
     /**
      * Дозволений HTML для повідомлень з датою.
      */
@@ -57,6 +61,32 @@ class ESB_Admin {
             self::PAGE,
             array( __CLASS__, 'render_page' )
         );
+
+        // До виводу сторінки: переносимо сховище поза публічну теку, поки ще не показано шляхи.
+        add_action( 'load-' . self::$hook, array( __CLASS__, 'maybe_relocate' ) );
+    }
+
+    /**
+     * Переносить копії поза публічну теку сайту, якщо це ще не зроблено і хостинг дозволяє.
+     * Лише з веб-запиту (потрібен DOCUMENT_ROOT) і коли не йде бекап чи відновлення.
+     */
+    public static function maybe_relocate() {
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- шлях файлової системи, лише для realpath().
+        $root = isset( $_SERVER['DOCUMENT_ROOT'] ) ? wp_unslash( $_SERVER['DOCUMENT_ROOT'] ) : '';
+
+        if ( '' === $root || ESB_Storage::is_private() || false !== get_transient( self::RELOCATE_SKIP ) || ESB_Backup::active_job() || ESB_Restore::active() ) {
+            return;
+        }
+
+        $result = ESB_Storage::relocate( $root );
+
+        if ( is_string( $result ) ) {
+            set_transient( self::RELOCATED, $result, HOUR_IN_SECONDS );
+            return;
+        }
+
+        // Не вийшло або нікуди — не пробуємо на кожному відкритті сторінки, лише раз на добу.
+        set_transient( self::RELOCATE_SKIP, is_wp_error( $result ) ? $result->get_error_message() : '', DAY_IN_SECONDS );
     }
 
     /**
@@ -156,6 +186,7 @@ class ESB_Admin {
             <?php self::render_notice(); ?>
             <?php self::render_restore_result(); ?>
             <?php self::render_timezone_hint(); ?>
+            <?php self::render_relocated_notice(); ?>
             <?php self::render_exposure_warning(); ?>
 
             <div class="esb-card">
@@ -285,7 +316,9 @@ class ESB_Admin {
                     '<code>' . esc_html( ESB_Storage::dir() ) . '</code>'
                 );
                 echo ' ';
-                if ( false === ESB_Storage::is_exposed() ) {
+                if ( ESB_Storage::is_private() ) {
+                    esc_html_e( 'Це тека поза публічною частиною сайту: з інтернету копії недоступні за жодних налаштувань вебсервера.', 'easy-site-backup' );
+                } elseif ( false === ESB_Storage::is_exposed() ) {
                     esc_html_e( 'Прямий доступ до теки з інтернету закрито — перевірено.', 'easy-site-backup' );
                 } elseif ( null === ESB_Storage::is_exposed() ) {
                     esc_html_e( 'Перевірити, чи закрита тека від прямого доступу, не вдалося. На Apache її закриває .htaccess; на Nginx заборону треба додати в конфігурацію сервера.', 'easy-site-backup' );
@@ -517,6 +550,26 @@ class ESB_Admin {
     }
 
     /**
+     * Один раз — після того, як копії перенесено поза публічну теку.
+     */
+    private static function render_relocated_notice() {
+        $path = get_transient( self::RELOCATED );
+        if ( ! $path ) {
+            return;
+        }
+        delete_transient( self::RELOCATED );
+
+        printf(
+            '<div class="notice notice-success is-dismissible"><p>%s</p></div>',
+            sprintf(
+                /* translators: %s: шлях до теки */
+                esc_html__( 'Резервні копії перенесено поза публічну теку сайту: %s. Тепер вебсервер не віддасть їх за посиланням, хоч би як його було налаштовано.', 'easy-site-backup' ),
+                '<code>' . esc_html( $path ) . '</code>'
+            )
+        );
+    }
+
+    /**
      * Попередження, якщо вебсервер віддає файли з теки копій напряму (Nginx не читає .htaccess).
      */
     private static function render_exposure_warning() {
@@ -548,6 +601,13 @@ class ESB_Admin {
                 </p>
             <?php endif; ?>
             <p><?php esc_html_e( 'Apache: дозвольте .htaccess для теки uploads (AllowOverride All або AuthConfig Limit) — файл заборони плагін уже створив.', 'easy-site-backup' ); ?></p>
+            <?php $skip = get_transient( self::RELOCATE_SKIP ); ?>
+            <p>
+                <?php esc_html_e( 'Перенести копії поза публічну теку сайту, де вебсервер їх не віддасть, плагін не зміг: хостинг не дозволяє писати поза нею.', 'easy-site-backup' ); ?>
+                <?php if ( $skip ) : ?>
+                    <?php echo esc_html( $skip ); ?>
+                <?php endif; ?>
+            </p>
             <p><a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=esb_recheck_exposure' ), 'esb_recheck_exposure' ) ); ?>" class="button"><?php esc_html_e( 'Перевірити знову', 'easy-site-backup' ); ?></a></p>
         </div>
         <?php
@@ -555,6 +615,8 @@ class ESB_Admin {
 
     public static function handle_recheck_exposure() {
         self::check_access( 'esb_recheck_exposure' );
+        // Заодно ще раз спробуємо перенести копії поза публічну теку (на сторінці, куди повертаємось).
+        delete_transient( self::RELOCATE_SKIP );
         ESB_Storage::is_exposed( true );
 
         wp_safe_redirect( admin_url( 'tools.php?page=' . self::PAGE ) );

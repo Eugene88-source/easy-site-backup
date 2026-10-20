@@ -1053,7 +1053,7 @@ class ESB_Restore {
     private static function skipped_paths( $root ) {
         $paths = array( 'wp-config.php', '.maintenance' );
 
-        foreach ( array( ESB_Storage::dir(), wp_normalize_path( ESB_DIR ) ) as $dir ) {
+        foreach ( array( ESB_Storage::dir(), ESB_Storage::uploads_dir(), wp_normalize_path( ESB_DIR ) ) as $dir ) {
             $dir = trailingslashit( $dir );
             if ( 0 === strpos( $dir, $root . '/' ) ) {
                 $paths[] = substr( $dir, strlen( $root ) + 1 );
