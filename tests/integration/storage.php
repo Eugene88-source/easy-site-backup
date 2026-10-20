@@ -34,8 +34,20 @@ $html    = render();
 $uploads = wp_upload_dir( null, false );
 $path    = trailingslashit( wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) ) . ESB_Storage::DIR_NAME . '/';
 check( false !== strpos( $html, 'esb-exposed' ), 'warning shown' );
-check( false !== strpos( $html, 'location ^~ ' . $path . ' {' ), "nginx snippet with $path" );
+check( false !== strpos( $html, 'location ^~ &quot;' . $path . '&quot; {' ), "nginx snippet with quoted $path" );
 check( false !== strpos( $html, 'action=esb_recheck_exposure' ), 'recheck button' );
+check( false === strpos( $html, 'іншої адреси' ), 'no CDN note when uploads are on the site host' );
+
+// Uploads на іншому хості й з пробілом у шляху (як у плагінів винесення медіа на CDN).
+$cdn = function ( $dirs ) {
+    $dirs['baseurl'] = 'https://cdn.example.com/my%20site/uploads';
+    return $dirs;
+};
+add_filter( 'upload_dir', $cdn );
+$html = render();
+remove_filter( 'upload_dir', $cdn );
+check( false !== strpos( $html, 'location ^~ &quot;/my site/uploads/' . ESB_Storage::DIR_NAME . '/&quot; {' ), 'path decoded and quoted (space survives in nginx config)' );
+check( false !== strpos( $html, 'іншої адреси (cdn.example.com)' ), 'CDN host note shown' );
 
 echo "== closed (Apache .htaccess)\n";
 $forbidden = function () {

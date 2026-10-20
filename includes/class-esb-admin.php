@@ -497,15 +497,28 @@ class ESB_Admin {
         }
 
         $uploads = wp_upload_dir( null, false );
-        $path    = trailingslashit( (string) wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) ) . ESB_Storage::DIR_NAME . '/';
+        // Nginx зіставляє location із декодованою адресою, тож %20 тощо розкодовуємо,
+        // а шлях беремо в лапки — інакше пробіл у ньому зламав би конфігурацію.
+        $path    = rawurldecode( trailingslashit( (string) wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) ) ) . ESB_Storage::DIR_NAME . '/';
+        $quoted  = '"' . addcslashes( $path, '"\\' ) . '"';
+        $host    = (string) wp_parse_url( $uploads['baseurl'], PHP_URL_HOST );
+        $foreign = $host && strtolower( $host ) !== strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
         ?>
         <div class="notice notice-error esb-exposed">
             <p><strong><?php esc_html_e( 'Теку з резервними копіями видно з інтернету.', 'easy-site-backup' ); ?></strong>
                 <?php esc_html_e( 'Вебсервер віддає файли з неї напряму, тож архів копії з усією базою даних може завантажити будь-хто, хто дізнається його адресу. Назви тек копій випадкові, але краще закрити теку повністю.', 'easy-site-backup' ); ?></p>
             <p><?php esc_html_e( 'Nginx: додайте в блок server конфігурації сайту й перезавантажте Nginx:', 'easy-site-backup' ); ?></p>
-            <pre><code>location ^~ <?php echo esc_html( $path ); ?> {
+            <pre><code>location ^~ <?php echo esc_html( $quoted ); ?> {
     deny all;
 }</code></pre>
+            <?php if ( $foreign ) : ?>
+                <p>
+                    <?php
+                    /* translators: %s: адреса, з якої віддаються файли uploads */
+                    echo esc_html( sprintf( __( 'Файли uploads віддаються з іншої адреси (%s) — наприклад, через CDN. Блок треба додати в конфігурацію сервера, що обслуговує цю адресу, і звірити шлях із тим, за яким там доступна тека копій.', 'easy-site-backup' ), $host ) );
+                    ?>
+                </p>
+            <?php endif; ?>
             <p><?php esc_html_e( 'Apache: дозвольте .htaccess для теки uploads (AllowOverride All або AuthConfig Limit) — файл заборони плагін уже створив.', 'easy-site-backup' ); ?></p>
             <p><a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=esb_recheck_exposure' ), 'esb_recheck_exposure' ) ); ?>" class="button"><?php esc_html_e( 'Перевірити знову', 'easy-site-backup' ); ?></a></p>
         </div>
