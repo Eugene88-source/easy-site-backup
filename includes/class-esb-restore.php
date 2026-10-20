@@ -53,6 +53,11 @@ class ESB_Restore {
      */
     const FRESH_STEP_PHASES = array( 'prepare', 'db_extract', 'finalize' );
 
+    /**
+     * Скільки секунд чекати, доки MySQL завершить запит убитого кроку (див. db_lock()).
+     */
+    const DB_LOCK_WAIT = 5;
+
     private static $lock;
 
     private static $state_path;
@@ -113,6 +118,8 @@ class ESB_Restore {
                 'size'     => 0,
                 'offset'   => 0,
                 'sets'     => array(),
+                // Скільки рядків уже вставлено в кожну тимчасову таблицю — для перевірки після обриву.
+                'rows'     => array(),
                 'swapping' => false,
             ),
             'files'     => array(
@@ -317,6 +324,13 @@ class ESB_Restore {
         $started  = microtime( true );
         $deadline = $started + ESB_Backup::step_seconds();
 
+        // Якщо попередній крок убили посеред запиту, MySQL ще може його виконувати. Не чіпаємо
+        // тимчасові таблиці, доки той запит не завершиться, — інакше підрахунок рядків нижче
+        // не побачив би його вставки, і вона задвоїлася б. Не дочекалися — спробуємо наступним кроком.
+        if ( ! self::db_lock() ) {
+            return;
+        }
+
         try {
             // Лічильник скидається лише після успішного кроку, тож він рахує кроки, які вбив сервер.
             if ( ++$state['attempts'] > ESB_Backup::MAX_ATTEMPTS ) {
@@ -337,7 +351,40 @@ class ESB_Restore {
             self::save( $state );
         } catch ( Exception $e ) {
             self::fail( $state, $e->getMessage() );
+        } finally {
+            self::db_unlock();
         }
+    }
+
+    /**
+     * Іменоване блокування MySQL на час кроку. Його тримає сесія з'єднання, і MySQL знімає його,
+     * лише коли сесія закінчилася — у вбитого процесу це стається після завершення його запиту.
+     *
+     * @return bool false — попередній запит ще виконується (не дочекалися за DB_LOCK_WAIT секунд).
+     */
+    private static function db_lock() {
+        global $wpdb;
+
+        $got = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', self::db_lock_name(), self::DB_LOCK_WAIT ) );
+
+        // '1' — отримали; '0' — не дочекалися; NULL — помилка (наприклад, функцію вимкнено):
+        // тоді працюємо без блокування, як раніше.
+        return '0' !== (string) $got;
+    }
+
+    private static function db_unlock() {
+        global $wpdb;
+
+        $wpdb->query( $wpdb->prepare( 'DO RELEASE_LOCK(%s)', self::db_lock_name() ) );
+    }
+
+    /**
+     * Назви блокувань спільні для всього сервера MySQL, тож прив'язуємо до бази й префікса сайту.
+     */
+    private static function db_lock_name() {
+        global $wpdb;
+
+        return 'esb_restore_' . substr( md5( DB_NAME . '/' . $wpdb->base_prefix ), 0, 16 );
     }
 
     private static function run_phase( array &$state, $deadline ) {
@@ -623,16 +670,46 @@ class ESB_Restore {
         $temp = self::quote( self::TEMP_PREFIX . $table );
         $sql  = $verb . ' ' . $temp . substr( $sql, strlen( $m[0] ) );
 
+        $counts = &$state['db']['rows'];
+
         if ( 'CREATE TABLE' === $verb ) {
             // Таблицю могли створити в перерваному кроці.
             self::query( "DROP TABLE IF EXISTS {$temp}" );
-            $sql = self::rewrite_foreign_keys( $sql, $state['db']['tables'] );
-        } elseif ( 'INSERT INTO' === $verb && $resumed ) {
-            // Ця вставка могла вже виконатися в перерваному кроці.
-            $sql = 'INSERT IGNORE INTO' . substr( $sql, strlen( 'INSERT INTO' ) );
+            $sql              = self::rewrite_foreign_keys( $sql, $state['db']['tables'] );
+            $counts[ $table ] = 0;
+        } elseif ( 'INSERT INTO' === $verb ) {
+            // У дампі кожен рядок значень — окремий рядок тексту (перенесення в значеннях екрановано).
+            $rows     = substr_count( $sql, "\n" );
+            $expected = isset( $counts[ $table ] ) ? $counts[ $table ] : 0;
+
+            // Крок, що виконував цю вставку, перервали: вона могла вже виконатися, а стан — не встигнути
+            // зберегтися. Повтор задвоїв би рядки (у таблиці без ключа IGNORE не допоміг би), тож рахуємо.
+            if ( $resumed ) {
+                $have = (int) self::scalar( "SELECT COUNT(*) FROM {$temp}" );
+
+                if ( $have === $expected + $rows ) {
+                    $counts[ $table ] = $have;
+                    return; // уже виконано
+                }
+                if ( $have !== $expected ) {
+                    /* translators: %s: назва таблиці */
+                    throw new RuntimeException( sprintf( __( 'Після перерваного кроку кількість рядків у таблиці %s не відповідає дампу.', 'easy-site-backup' ), $table ) );
+                }
+            }
+
+            $counts[ $table ] = $expected + $rows;
         }
 
         self::query( $sql );
+    }
+
+    /**
+     * @return string|null Перше значення першого рядка результату.
+     */
+    private static function scalar( $sql ) {
+        global $wpdb;
+
+        return $wpdb->get_var( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- назву таблиці екрановано.
     }
 
     /**
@@ -686,6 +763,12 @@ class ESB_Restore {
             self::save( $state );
 
             self::query( 'RENAME TABLE ' . implode( ', ', $pairs ) );
+
+            /**
+             * Робочі таблиці щойно замінено відновленими; стан відновлення ще не збережено.
+             * Тест обриву (tests/integration/interrupt.php) завершує тут процес.
+             */
+            do_action( 'esb_restore_tables_swapped', $tables );
         }
 
         self::drop_tables( self::OLD_PREFIX, $tables );
