@@ -1,10 +1,12 @@
-# Збирає easy-site-backup.zip і додає його до опублікованого релізу.
-# Сайти з плагіном завантажують саме це вкладення як оновлення.
+# Реліз за push тегу vX.Y.Z: збирає easy-site-backup.zip і публікує реліз
+# з текстом із розділу «Зміни» в README. Сайти з плагіном завантажують саме це вкладення як оновлення.
+# Якщо реліз із цим тегом уже створено вручну у вебінтерфейсі, архів просто додається до нього.
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -31,7 +33,26 @@ jobs:
           git archive HEAD | tar -x -C build/easy-site-backup
           cd build && zip -rq easy-site-backup.zip easy-site-backup
 
-      - name: Upload to release
+      - name: Release notes from README
+        run: |
+          # Рядки між «### <версія>» і наступним заголовком.
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            { sub(/\r$/, "") }
+            /^##/ { if (p) exit; p = ($0 == "### " v); next }
+            p { print }
+          ' README.md > build/notes.md
+          if [ ! -s build/notes.md ]; then
+            echo "Версія ${GITHUB_REF_NAME#v}" > build/notes.md
+          fi
+          cat build/notes.md
+
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" build/easy-site-backup.zip --clobber
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" build/easy-site-backup.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" build/easy-site-backup.zip \
+              --title "${GITHUB_REF_NAME#v}" --notes-file build/notes.md --latest
+          fi
