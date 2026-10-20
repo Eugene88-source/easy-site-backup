@@ -936,6 +936,16 @@ class ESB_Restore {
         $temp  = $path . '.esb-restore';
         $size  = $large['entry']['size'];
 
+        // Тимчасовий файл коротший за збережену позицію або його вже немає (крок перервали після
+        // перейменування, але до збереження стану) — починаємо файл спочатку. Інакше ftruncate()
+        // доповнив би його нулями, і CRC, що рахується за даними з архіву, цього б не помітив.
+        clearstatcache( true, $temp );
+        if ( $large['done'] > 0 && ( ! is_file( $temp ) || filesize( $temp ) < $large['done'] ) ) {
+            $files['done_bytes'] -= $large['done'];
+            $large['done']        = 0;
+            $large['crc']         = 0;
+        }
+
         $out = wp_mkdir_p( dirname( $path ) ) ? @fopen( $temp, 'c+b' ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         if ( ! $out || ! ftruncate( $out, $large['done'] ) || 0 !== fseek( $out, $large['done'] ) ) {
             if ( $out ) {

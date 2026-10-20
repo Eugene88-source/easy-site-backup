@@ -76,12 +76,13 @@ function run_with_kills( $kind, $arg, $phase, $label ) {
         if ( 0 === $i % 2 ) {
             $before = call_user_func( $phase );
             // Від запуску WordPress (~0,1–0,3 с) до кінця кроку (1 с).
-            if ( 'killed' === child_step( $kind, $arg, mt_rand( 150, 1150 ) / 1000 ) ) {
+            // Після запуску WordPress (~0,1–0,3 с), до кінця кроку (1 с).
+            if ( 'killed' === child_step( $kind, $arg, mt_rand( 300, 1150 ) / 1000 ) ) {
                 $killed[ $label ][ $before ] = isset( $killed[ $label ][ $before ] ) ? $killed[ $label ][ $before ] + 1 : 1;
             }
             continue;
         }
-        $status = child_step( $kind, $arg );
+        $status = child_step( $kind, $arg, null, array( 'ESB_STEP' => '0.25' ) );
     }
 
     return $status;
@@ -108,12 +109,13 @@ $wpdb->query( "DROP TABLE IF EXISTS $table" );
 $wpdb->query( "DROP TABLE IF EXISTS $nopk" );
 $wpdb->query( "CREATE TABLE $table (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, v TEXT) DEFAULT CHARSET=utf8mb4" );
 $wpdb->query( "CREATE TABLE $nopk (k VARCHAR(40), v TEXT) DEFAULT CHARSET=utf8mb4" );
-for ( $batch = 0; $batch < 30; $batch++ ) {
+// Даних достатньо, щоб робота тривала десятки кроків навіть на маленькому чистому сайті (як у CI).
+for ( $batch = 0; $batch < 300; $batch++ ) {
     $values = array();
     $plain  = array();
     for ( $i = 0; $i < 1000; $i++ ) {
         $values[] = $wpdb->prepare( '(%s)', "рядок $batch-$i 'лапки' % " . wp_generate_password( 60, true, true ) );
-        if ( $i < 200 ) {
+        if ( $i < 100 ) {
             $plain[] = $wpdb->prepare( '(%s, %s)', "k-$batch-$i", str_repeat( 'v', 150 ) );
         }
     }
@@ -121,7 +123,7 @@ for ( $batch = 0; $batch < 30; $batch++ ) {
     $wpdb->query( "INSERT INTO $nopk (k, v) VALUES " . implode( ',', $plain ) );
 }
 wp_mkdir_p( $dir );
-for ( $i = 0; $i < 4; $i++ ) {
+for ( $i = 0; $i < 12; $i++ ) {
     file_put_contents( "$dir/large-$i.bin", random_bytes( 3 * MB_IN_BYTES + $i * 1001 ) );
 }
 for ( $i = 0; $i < 200; $i++ ) {
@@ -195,8 +197,12 @@ check( count( $killed['restore'] ) >= 2, 'kills landed in several restore phases
 $after = checksums();
 foreach ( $before as $name => $sum ) {
     if ( ! isset( $after[ $name ] ) || $after[ $name ] !== $sum ) {
-        check( false, "$name differs after restore" );
+        $info = file_exists( "$dir/$name" ) ? ' (size ' . filesize( "$dir/$name" ) . ( file_exists( "$dir/$name.esb-restore" ) ? ', .esb-restore ' . filesize( "$dir/$name.esb-restore" ) : '' ) . ')' : '';
+        check( false, "$name differs after restore$info" );
     }
+}
+if ( $before !== $after ) {
+    echo "  restore log:\n    " . implode( "\n    ", array_slice( file( ESB_Job::load( $id )->path( 'log.txt' ), FILE_IGNORE_NEW_LINES ), -12 ) ) . "\n";
 }
 check( $before === $after, 'tables and files identical to the state before backup (no duplicated or lost rows)' );
 check( null === esb_test_option( 'esb_test_marker' ), 'option added after backup is gone' );

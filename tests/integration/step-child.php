@@ -13,7 +13,8 @@ require $argv[1] . '/wp-load.php';
 add_filter(
     'esb_step_seconds',
     function () {
-        return 1.0;
+        // Нормальні кроки — короткі (більше кроків і переходів між фазами), «вбиті» — на секунду.
+        return getenv( 'ESB_STEP' ) ? (float) getenv( 'ESB_STEP' ) : 1.0;
     }
 );
 add_filter(
