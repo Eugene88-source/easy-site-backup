@@ -121,6 +121,14 @@
 	margin-top: 4px;
 }
 
+.esb-exposed pre {
+	margin: 0 0 8px;
+	padding: 8px 12px;
+	overflow-x: auto;
+	background: #f6f7f7;
+	border-radius: 4px;
+}
+
 .esb-storage-note {
 	margin-top: 12px;
 }

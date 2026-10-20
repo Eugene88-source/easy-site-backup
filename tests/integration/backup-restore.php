@@ -53,7 +53,12 @@ clearstatcache();
 check( md5_file( $style ) === $style_md5, 'theme file restored' );
 check( file_exists( $new_file ), 'file created after backup kept' );
 check( array() === esb_test_temp_tables(), 'no esbr_/esbo_ tables left' );
-check( ! file_exists( ESB_Storage::dir() . '/' . ESB_Restore::SQL ), 'restore.sql removed' );
+check( 0 === strpos( ESB_Restore::sql_path( $final ), $job->dir() . '/' ), 'dump extracted into the backup folder (random name), not storage root' );
+check( ! file_exists( ESB_Restore::sql_path( $final ) ), 'restore.sql removed' );
+check( (bool) preg_match( '/^restore-[a-z0-9]{32}\.json$/', basename( (string) ESB_Restore::state_path() ) ), 'state file has random name: ' . basename( (string) ESB_Restore::state_path() ) );
+foreach ( ESB_Restore::LEGACY_FILES as $legacy ) {
+    check( ! file_exists( ESB_Storage::dir() . '/' . $legacy ), "no fixed-name $legacy in storage root" );
+}
 check( 0 === $final['files']['failed'], "files: done {$final['files']['done_files']}, failed {$final['files']['failed']}, skipped {$final['files']['skipped']}" );
 check( false !== strpos( file_get_contents( $job->path( 'log.txt' ) ), 'Відновлення: готово' ), 'restore logged in backup log' );
 check( 200 === wp_remote_retrieve_response_code( wp_remote_get( home_url( '/' ) ) ), 'front page 200 after restore' );

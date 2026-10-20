@@ -43,6 +43,7 @@ class ESB_Admin {
         add_action( 'admin_post_esb_delete', array( __CLASS__, 'handle_delete' ) );
         add_action( 'admin_post_esb_bulk_delete', array( __CLASS__, 'handle_bulk_delete' ) );
         add_action( 'admin_post_esb_save_schedule', array( __CLASS__, 'handle_save_schedule' ) );
+        add_action( 'admin_post_esb_recheck_exposure', array( __CLASS__, 'handle_recheck_exposure' ) );
     }
 
     public static function add_page() {
@@ -140,6 +141,7 @@ class ESB_Admin {
             <?php self::render_notice(); ?>
             <?php self::render_restore_result(); ?>
             <?php self::render_timezone_hint(); ?>
+            <?php self::render_exposure_warning(); ?>
 
             <div class="esb-card">
             <h2><?php esc_html_e( 'Нова резервна копія', 'easy-site-backup' ); ?></h2>
@@ -251,9 +253,15 @@ class ESB_Admin {
                 <?php
                 printf(
                     /* translators: %s: шлях до теки */
-                    esc_html__( 'Копії зберігаються в %s. На Apache прямий доступ заборонено через .htaccess; на Nginx файли захищені лише випадковими назвами тек — бажано заборонити цю теку в конфігурації сервера.', 'easy-site-backup' ),
+                    esc_html__( 'Копії зберігаються в %s.', 'easy-site-backup' ),
                     '<code>' . esc_html( ESB_Storage::dir() ) . '</code>'
                 );
+                echo ' ';
+                if ( false === ESB_Storage::is_exposed() ) {
+                    esc_html_e( 'Прямий доступ до теки з інтернету закрито — перевірено.', 'easy-site-backup' );
+                } elseif ( null === ESB_Storage::is_exposed() ) {
+                    esc_html_e( 'Перевірити, чи закрита тека від прямого доступу, не вдалося. На Apache її закриває .htaccess; на Nginx заборону треба додати в конфігурацію сервера.', 'easy-site-backup' );
+                }
                 ?>
             </p>
             </div>
@@ -478,6 +486,38 @@ class ESB_Admin {
             </p>
         </div>
         <?php
+    }
+
+    /**
+     * Попередження, якщо вебсервер віддає файли з теки копій напряму (Nginx не читає .htaccess).
+     */
+    private static function render_exposure_warning() {
+        if ( true !== ESB_Storage::is_exposed() ) {
+            return;
+        }
+
+        $uploads = wp_upload_dir( null, false );
+        $path    = trailingslashit( (string) wp_parse_url( $uploads['baseurl'], PHP_URL_PATH ) ) . ESB_Storage::DIR_NAME . '/';
+        ?>
+        <div class="notice notice-error esb-exposed">
+            <p><strong><?php esc_html_e( 'Теку з резервними копіями видно з інтернету.', 'easy-site-backup' ); ?></strong>
+                <?php esc_html_e( 'Вебсервер віддає файли з неї напряму, тож архів копії з усією базою даних може завантажити будь-хто, хто дізнається його адресу. Назви тек копій випадкові, але краще закрити теку повністю.', 'easy-site-backup' ); ?></p>
+            <p><?php esc_html_e( 'Nginx: додайте в блок server конфігурації сайту й перезавантажте Nginx:', 'easy-site-backup' ); ?></p>
+            <pre><code>location ^~ <?php echo esc_html( $path ); ?> {
+    deny all;
+}</code></pre>
+            <p><?php esc_html_e( 'Apache: дозвольте .htaccess для теки uploads (AllowOverride All або AuthConfig Limit) — файл заборони плагін уже створив.', 'easy-site-backup' ); ?></p>
+            <p><a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=esb_recheck_exposure' ), 'esb_recheck_exposure' ) ); ?>" class="button"><?php esc_html_e( 'Перевірити знову', 'easy-site-backup' ); ?></a></p>
+        </div>
+        <?php
+    }
+
+    public static function handle_recheck_exposure() {
+        self::check_access( 'esb_recheck_exposure' );
+        ESB_Storage::is_exposed( true );
+
+        wp_safe_redirect( admin_url( 'tools.php?page=' . self::PAGE ) );
+        exit;
     }
 
     private static function download_url( $id, $name ) {

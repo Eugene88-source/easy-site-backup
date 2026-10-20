@@ -26,6 +26,8 @@ class ESB_Storage {
      */
     const SPACE_MARGIN = 50 * MB_IN_BYTES;
 
+    const EXPOSED_CACHE = 'esb_storage_exposed';
+
     /**
      * Файли, які дозволено завантажувати.
      */
@@ -126,6 +128,43 @@ class ESB_Storage {
         );
 
         return $jobs;
+    }
+
+    /**
+     * Чи віддає вебсервер файли з теки сховища напряму (Nginx, Apache з AllowOverride None).
+     *
+     * Кладе в теку тестовий файл із випадковою назвою, запитує його через HTTP і одразу видаляє.
+     * Результат кешується на добу, а невдала перевірка — на годину.
+     *
+     * @return bool|null true — теку видно з інтернету; null — перевірити не вдалося.
+     */
+    public static function is_exposed( $force = false ) {
+        $cached = get_transient( self::EXPOSED_CACHE );
+        if ( ! $force && false !== $cached ) {
+            return 'unknown' === $cached ? null : 'yes' === $cached;
+        }
+
+        $result = null;
+        $dir    = self::ensure_dir();
+
+        if ( ! is_wp_error( $dir ) ) {
+            $name    = 'probe-' . strtolower( wp_generate_password( 16, false ) ) . '.txt';
+            $content = 'esb-probe-' . wp_generate_password( 16, false );
+
+            if ( false !== file_put_contents( $dir . '/' . $name, $content ) ) {
+                $uploads  = wp_upload_dir( null, false );
+                $response = wp_remote_get( trailingslashit( $uploads['baseurl'] ) . self::DIR_NAME . '/' . $name, array( 'timeout' => 5, 'redirection' => 0 ) );
+                @unlink( $dir . '/' . $name ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+                if ( ! is_wp_error( $response ) ) {
+                    $result = 200 === wp_remote_retrieve_response_code( $response ) && false !== strpos( wp_remote_retrieve_body( $response ), $content );
+                }
+            }
+        }
+
+        set_transient( self::EXPOSED_CACHE, null === $result ? 'unknown' : ( $result ? 'yes' : 'no' ), null === $result ? HOUR_IN_SECONDS : DAY_IN_SECONDS );
+
+        return $result;
     }
 
     /**

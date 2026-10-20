@@ -10,6 +10,10 @@
  *
  * Після підміни бази в ній може не бути сесії поточного користувача, а з нею — і nonce.
  * Тому стан відновлення зберігається у файлі, а кроки перевіряються випадковим токеном.
+ *
+ * Файли відновлення не мають постійних назв: на Nginx .htaccess не діє, і файл із відомою
+ * адресою можна було б завантажити напряму. Стан — у корені сховища під випадковою назвою
+ * (restore-<випадкове>.json), розпакований дамп — у теці самої копії, назва якої теж випадкова.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -20,9 +24,17 @@ class ESB_Restore {
 
     const CRON_HOOK = 'esb_restore_step';
 
-    const STATE = 'restore.json';
+    const STATE_PATTERN = 'restore-*.json';
 
+    /**
+     * Розпакований дамп — у теці копії, з якої йде відновлення.
+     */
     const SQL = 'restore.sql';
+
+    /**
+     * Постійні назви до 0.4.6, у корені сховища.
+     */
+    const LEGACY_FILES = array( 'restore.json', 'restore.sql' );
 
     const TEMP_PREFIX = 'esbr_';
 
@@ -36,6 +48,8 @@ class ESB_Restore {
     const MANIFEST_MAX_BYTES = 16 * MB_IN_BYTES;
 
     private static $lock;
+
+    private static $state_path;
 
     /**
      * Попередній крок перервали: перша інструкція дампу могла вже виконатися.
@@ -103,6 +117,12 @@ class ESB_Restore {
             ),
         );
 
+        // Стан попереднього відновлення і файли старих версій більше не потрібні.
+        foreach ( array_merge( (array) glob( self::path( self::STATE_PATTERN ) ), array_map( array( __CLASS__, 'path' ), self::LEGACY_FILES ) ) as $old ) {
+            @unlink( $old ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        }
+        self::$state_path = null;
+
         try {
             self::save( $state );
         } catch ( Exception $e ) {
@@ -119,9 +139,9 @@ class ESB_Restore {
      * @return array|null Стан останнього відновлення.
      */
     public static function load() {
-        $path = self::path( self::STATE );
+        $path = self::state_path();
 
-        if ( ! is_readable( $path ) ) {
+        if ( ! $path || ! is_readable( $path ) ) {
             return null;
         }
 
@@ -341,7 +361,7 @@ class ESB_Restore {
             self::log( $state, 'не вдалося видалити тимчасові таблиці: ' . $e->getMessage() );
         }
 
-        @unlink( self::path( self::SQL ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @unlink( self::sql_path( $state ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
         try {
             self::save( $state );
@@ -457,7 +477,7 @@ class ESB_Restore {
         $out    = null;
 
         try {
-            $out = self::open( self::path( self::SQL ), 'wb' );
+            $out = self::open( self::sql_path( $state ), 'wb' );
             $reader->extract( $state['db']['entry'], $out );
         } finally {
             if ( $out ) {
@@ -480,7 +500,7 @@ class ESB_Restore {
      */
     private static function db_import( array &$state, $deadline ) {
         $db = &$state['db'];
-        $fh = self::open( self::path( self::SQL ), 'rb' );
+        $fh = self::open( self::sql_path( $state ), 'rb' );
 
         try {
             if ( 0 !== fseek( $fh, $db['offset'] ) ) {
@@ -855,7 +875,7 @@ class ESB_Restore {
             self::log( $state, 'базу даних замінено' );
         }
 
-        @unlink( self::path( self::SQL ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+        @unlink( self::sql_path( $state ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         wp_cache_flush();
 
         $state['status']   = 'done';
@@ -872,11 +892,52 @@ class ESB_Restore {
         return ESB_Storage::dir() . '/' . $name;
     }
 
+    /**
+     * Шлях до розпакованого дампу — у теці копії з випадковою назвою.
+     */
+    public static function sql_path( array $state ) {
+        return ESB_Storage::job_dir( $state['backup'] ) . '/' . self::SQL;
+    }
+
+    /**
+     * @return string|null Файл стану відновлення, якщо він є.
+     */
+    public static function state_path() {
+        if ( self::$state_path && is_file( self::$state_path ) ) {
+            return self::$state_path;
+        }
+
+        $found = glob( self::path( self::STATE_PATTERN ) );
+        if ( $found ) {
+            return self::$state_path = $found[0];
+        }
+
+        // Стан від версії до 0.4.6 — переносимо під випадкову назву.
+        $legacy = self::path( self::LEGACY_FILES[0] );
+        if ( is_file( $legacy ) ) {
+            $path = self::new_state_path();
+            if ( @rename( $legacy, $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+                return self::$state_path = $path;
+            }
+        }
+
+        return null;
+    }
+
+    private static function new_state_path() {
+        return self::path( str_replace( '*', strtolower( wp_generate_password( 32, false ) ), self::STATE_PATTERN ) );
+    }
+
     private static function save( array &$state ) {
         $state['updated'] = time();
 
-        $tmp = self::path( self::STATE . '.tmp' );
-        if ( false === file_put_contents( $tmp, wp_json_encode( $state ) ) || ! rename( $tmp, self::path( self::STATE ) ) ) {
+        $path = self::state_path();
+        if ( ! $path ) {
+            $path = self::$state_path = self::new_state_path();
+        }
+
+        $tmp = $path . '.tmp';
+        if ( false === file_put_contents( $tmp, wp_json_encode( $state ) ) || ! rename( $tmp, $path ) ) {
             throw new RuntimeException( __( 'Не вдалося зберегти стан відновлення. Можливо, на диску закінчилося місце.', 'easy-site-backup' ) );
         }
     }
