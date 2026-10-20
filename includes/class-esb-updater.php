@@ -120,10 +120,10 @@ class ESB_Updater {
     }
 
     /**
-     * Не оновлюємося автоматично посеред бекапу — WordPress спробує знову пізніше.
+     * Не оновлюємося автоматично посеред бекапу чи відновлення — WordPress спробує знову пізніше.
      */
     public static function postpone_during_backup( $update, $item ) {
-        if ( isset( $item->plugin ) && self::basename() === $item->plugin && ESB_Backup::active_job() ) {
+        if ( isset( $item->plugin ) && self::basename() === $item->plugin && ( ESB_Backup::active_job() || ESB_Restore::active() ) ) {
             return false;
         }
 

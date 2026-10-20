@@ -23,12 +23,15 @@ require_once ESB_DIR . 'includes/class-esb-storage.php';
 require_once ESB_DIR . 'includes/class-esb-job.php';
 require_once ESB_DIR . 'includes/class-esb-zip-writer.php';
 require_once ESB_DIR . 'includes/class-esb-backup.php';
+require_once ESB_DIR . 'includes/class-esb-zip-reader.php';
+require_once ESB_DIR . 'includes/class-esb-restore.php';
 require_once ESB_DIR . 'includes/class-esb-updater.php';
 
 register_activation_hook( __FILE__, array( 'ESB_Storage', 'ensure_dir' ) );
 
 // Запасний виконавець кроків, коли сторінку плагіна закрито.
 add_action( ESB_Backup::CRON_HOOK, array( 'ESB_Backup', 'cron_step' ) );
+add_action( ESB_Restore::CRON_HOOK, array( 'ESB_Restore', 'cron_step' ) );
 
 // Перевірка оновлень працює й у WP-Cron, тож підключаємо її не лише в адмінці.
 ESB_Updater::init();

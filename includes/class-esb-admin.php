@@ -20,6 +20,11 @@ class ESB_Admin {
         add_action( 'wp_ajax_esb_start', array( __CLASS__, 'ajax_start' ) );
         add_action( 'wp_ajax_esb_step', array( __CLASS__, 'ajax_step' ) );
         add_action( 'wp_ajax_esb_cancel', array( __CLASS__, 'ajax_cancel' ) );
+        add_action( 'wp_ajax_esb_restore_start', array( __CLASS__, 'ajax_restore_start' ) );
+
+        // Після заміни бази сесії користувача може вже не бути — кроки відновлення перевіряються токеном.
+        add_action( 'wp_ajax_esb_restore_step', array( __CLASS__, 'ajax_restore_step' ) );
+        add_action( 'wp_ajax_nopriv_esb_restore_step', array( __CLASS__, 'ajax_restore_step' ) );
 
         // Запуск без JavaScript: далі кроки виконує WP-Cron.
         add_action( 'admin_post_esb_create', array( __CLASS__, 'handle_create' ) );
@@ -43,7 +48,8 @@ class ESB_Admin {
             return;
         }
 
-        $active = ESB_Backup::active_job();
+        $active  = ESB_Backup::active_job();
+        $restore = ESB_Restore::active();
 
         wp_enqueue_style( 'esb-admin', plugins_url( 'assets/admin.css', ESB_FILE ), array(), ESB_VERSION );
         wp_enqueue_script( 'esb-admin', plugins_url( 'assets/admin.js', ESB_FILE ), array(), ESB_VERSION, true );
@@ -53,14 +59,17 @@ class ESB_Admin {
             array(
                 'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
                 'nonce'     => wp_create_nonce( 'esb_ajax' ),
-                'activeJob' => $active ? ESB_Backup::status( $active ) : null,
-                'i18n'      => array(
-                    'error'         => __( 'Сталася помилка.', 'easy-site-backup' ),
-                    'retry'         => __( 'Зв\'язок із сервером перервався, повторюю спробу…', 'easy-site-backup' ),
-                    'cancelConfirm' => __( 'Скасувати резервне копіювання? Незавершений архів буде видалено.', 'easy-site-backup' ),
-                    'cancelling'    => __( 'Скасування…', 'easy-site-backup' ),
+                'activeJob'     => $active ? ESB_Backup::status( $active ) : null,
+                'activeRestore' => $restore ? ESB_Restore::status( $restore ) : null,
+                'i18n'          => array(
+                    'error'          => __( 'Сталася помилка.', 'easy-site-backup' ),
+                    'retry'          => __( 'Зв\'язок із сервером перервався, повторюю спробу…', 'easy-site-backup' ),
+                    'cancelConfirm'  => __( 'Скасувати резервне копіювання? Незавершений архів буде видалено.', 'easy-site-backup' ),
+                    'cancelling'     => __( 'Скасування…', 'easy-site-backup' ),
                     /* translators: %d: кількість вибраних копій */
-                    'bulkConfirm'   => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
+                    'bulkConfirm'    => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
+                    /* translators: %s: дата копії */
+                    'restoreConfirm' => __( "Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
                 ),
             )
         );
@@ -90,9 +99,11 @@ class ESB_Admin {
             return;
         }
 
-        $labels = self::type_labels();
-        $active = ESB_Backup::active_job();
-        $jobs   = array_filter(
+        $labels  = self::type_labels();
+        $active  = ESB_Backup::active_job();
+        $restore = ESB_Restore::active();
+        $busy    = $active || $restore;
+        $jobs    = array_filter(
             ESB_Storage::list_jobs(),
             function ( $job ) use ( $active ) {
                 return ! $active || $job->id !== $active->id;
@@ -103,10 +114,11 @@ class ESB_Admin {
             <h1><?php esc_html_e( 'Easy Site Backup', 'easy-site-backup' ); ?></h1>
 
             <?php self::render_notice(); ?>
+            <?php self::render_restore_result(); ?>
 
             <h2><?php esc_html_e( 'Нова резервна копія', 'easy-site-backup' ); ?></h2>
 
-            <form id="esb-start-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" <?php echo $active ? 'hidden' : ''; ?>>
+            <form id="esb-start-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" <?php echo $busy ? 'hidden' : ''; ?>>
                 <input type="hidden" name="action" value="esb_create">
                 <?php wp_nonce_field( 'esb_create' ); ?>
 
@@ -122,11 +134,11 @@ class ESB_Admin {
                 <?php submit_button( __( 'Створити бекап', 'easy-site-backup' ) ); ?>
             </form>
 
-            <div id="esb-progress" class="esb-progress" <?php echo $active ? '' : 'hidden'; ?>>
+            <div id="esb-progress" class="esb-progress" <?php echo $busy ? '' : 'hidden'; ?>>
                 <div class="esb-progress-track"><div class="esb-progress-bar"></div></div>
                 <p class="esb-progress-message"></p>
                 <p class="description">
-                    <?php esc_html_e( 'Поки сторінка відкрита, копія створюється швидше. Якщо її закрити, процес продовжиться у фоні через WP-Cron, але повільніше.', 'easy-site-backup' ); ?>
+                    <?php esc_html_e( 'Поки сторінка відкрита, процес іде швидше. Якщо її закрити, він продовжиться у фоні через WP-Cron, але повільніше.', 'easy-site-backup' ); ?>
                 </p>
                 <button type="button" id="esb-cancel" class="button"><?php esc_html_e( 'Скасувати', 'easy-site-backup' ); ?></button>
             </div>
@@ -185,6 +197,7 @@ class ESB_Admin {
                                     <td class="esb-actions">
                                         <?php if ( $job->has_archive() ) : ?>
                                             <a class="button button-small" href="<?php echo esc_url( self::download_url( $job->id, ESB_Storage::ARCHIVE ) ); ?>"><?php esc_html_e( 'Завантажити', 'easy-site-backup' ); ?></a>
+                                            <button type="button" class="button button-small esb-restore" data-id="<?php echo esc_attr( $job->id ); ?>" data-date="<?php echo esc_attr( $date ); ?>" <?php disabled( $busy ); ?>><?php esc_html_e( 'Відновити', 'easy-site-backup' ); ?></button>
                                         <?php endif; ?>
                                         <?php if ( file_exists( $job->path( 'log.txt' ) ) ) : ?>
                                             <a href="<?php echo esc_url( self::download_url( $job->id, 'log.txt' ) ); ?>"><?php esc_html_e( 'Лог', 'easy-site-backup' ); ?></a>
@@ -239,6 +252,42 @@ class ESB_Admin {
         }
 
         printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( $class ), esc_html( $message ) );
+    }
+
+    /**
+     * Результат останнього відновлення — показується один раз.
+     */
+    private static function render_restore_result() {
+        $state = ESB_Restore::load();
+
+        if ( ! $state || ! empty( $state['seen'] ) || ! in_array( $state['status'], array( 'done', 'failed' ), true ) ) {
+            return;
+        }
+
+        $date = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $state['created'] );
+
+        if ( 'done' === $state['status'] ) {
+            $class = 'notice-success';
+            /* translators: %s: дата копії */
+            $message = sprintf( __( 'Сайт відновлено з копії від %s.', 'easy-site-backup' ), $date );
+
+            if ( $state['files']['failed'] ) {
+                $class    = 'notice-warning';
+                $message .= ' ' . sprintf(
+                    /* translators: %d: кількість файлів */
+                    __( 'Не вдалося записати файлів: %d — подробиці в лозі копії.', 'easy-site-backup' ),
+                    $state['files']['failed']
+                );
+            }
+        } else {
+            $class = 'notice-error';
+            /* translators: 1: дата копії, 2: текст помилки */
+            $message = sprintf( __( 'Не вдалося відновити сайт з копії від %1$s: %2$s Подробиці — у лозі копії.', 'easy-site-backup' ), $date, $state['error'] );
+        }
+
+        printf( '<div class="notice %s is-dismissible"><p>%s</p></div>', esc_attr( $class ), esc_html( $message ) );
+
+        ESB_Restore::mark_seen();
     }
 
     private static function download_url( $id, $name ) {
@@ -303,6 +352,32 @@ class ESB_Admin {
         ESB_Backup::cancel( self::posted_id() );
 
         wp_send_json_success();
+    }
+
+    public static function ajax_restore_start() {
+        self::check_ajax();
+
+        $state = ESB_Restore::start( self::posted_id() );
+
+        if ( is_wp_error( $state ) ) {
+            wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+        }
+
+        wp_send_json_success( ESB_Restore::status( $state ) );
+    }
+
+    /**
+     * Без nonce і перевірки прав: доступ дає токен, який отримав адміністратор, що запустив відновлення.
+     */
+    public static function ajax_restore_step() {
+        $token = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+        $state = ESB_Restore::step( $token );
+
+        if ( is_wp_error( $state ) ) {
+            wp_send_json_error( array( 'message' => $state->get_error_message() ) );
+        }
+
+        wp_send_json_success( ESB_Restore::status( $state ) );
     }
 
     private static function check_ajax() {
@@ -389,12 +464,13 @@ class ESB_Admin {
 
     private static function delete_backups( array $ids ) {
         $active  = ESB_Backup::active_job();
+        $restore = ESB_Restore::active();
         $deleted = 0;
         $failed  = 0;
 
         foreach ( array_unique( $ids ) as $id ) {
-            // Копію, що ще створюється, спершу треба скасувати.
-            if ( $active && $active->id === $id ) {
+            // Копію, що ще створюється, спершу треба скасувати; з копії, з якої йде відновлення, — дочекатися кінця.
+            if ( ( $active && $active->id === $id ) || ( $restore && $restore['backup'] === $id ) ) {
                 $failed++;
                 continue;
             }

@@ -76,6 +76,10 @@ class ESB_Backup {
             return new WP_Error( 'esb_busy', __( 'Резервне копіювання вже виконується.', 'easy-site-backup' ) );
         }
 
+        if ( ESB_Restore::active() ) {
+            return new WP_Error( 'esb_busy', __( 'Зараз виконується відновлення сайту. Дочекайтеся його завершення.', 'easy-site-backup' ) );
+        }
+
         $job = ESB_Job::create( $type );
         if ( is_wp_error( $job ) ) {
             return $job;

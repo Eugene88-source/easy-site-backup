@@ -1,5 +1,5 @@
 /**
- * Easy Site Backup: запуск резервного копіювання і покрокове виконання через AJAX.
+ * Easy Site Backup: запуск резервного копіювання або відновлення і покрокове виконання через AJAX.
  */
 ( function () {
 	'use strict';
@@ -23,7 +23,8 @@
 	var BUSY_DELAY = 3000;
 	var STEP_DELAY = 300;
 
-	var jobId = null;
+	// Поточне завдання: AJAX-дія кроку та її параметри.
+	var task = null;
 	var retries = 0;
 	var cancelling = false;
 
@@ -59,7 +60,7 @@
 			return;
 		}
 
-		request( 'esb_step', { id: jobId } )
+		request( task.action, task.params )
 			.then( function ( job ) {
 				retries = 0;
 				render( job );
@@ -81,6 +82,20 @@
 			} );
 	}
 
+	function runBackup( job ) {
+		task = { action: 'esb_step', params: { id: job.id } };
+		render( job );
+		step();
+	}
+
+	function runRestore( job ) {
+		task = { action: 'esb_restore_step', params: { token: job.token } };
+		// Відновлення не скасовується: частину файлів уже могло бути перезаписано.
+		cancelButton.hidden = true;
+		render( job );
+		step();
+	}
+
 	form.addEventListener( 'submit', function ( event ) {
 		event.preventDefault();
 
@@ -89,19 +104,35 @@
 		submit.disabled = true;
 
 		request( 'esb_start', { type: type ? type.value : 'full' } )
-			.then( function ( job ) {
-				jobId = job.id;
-				render( job );
-				step();
-			} )
+			.then( runBackup )
 			.catch( function ( error ) {
 				submit.disabled = false;
 				window.alert( error.message );
 			} );
 	} );
 
+	Array.prototype.forEach.call( document.querySelectorAll( '.esb-restore' ), function ( button ) {
+		button.addEventListener( 'click', function () {
+			if ( ! window.confirm( config.i18n.restoreConfirm.replace( '%s', button.dataset.date ) ) ) {
+				return;
+			}
+
+			button.disabled = true;
+
+			request( 'esb_restore_start', { id: button.dataset.id } )
+				.then( function ( job ) {
+					window.scrollTo( 0, 0 );
+					runRestore( job );
+				} )
+				.catch( function ( error ) {
+					button.disabled = false;
+					window.alert( error.message );
+				} );
+		} );
+	} );
+
 	cancelButton.addEventListener( 'click', function () {
-		if ( ! jobId || ! window.confirm( config.i18n.cancelConfirm ) ) {
+		if ( ! task || 'esb_step' !== task.action || ! window.confirm( config.i18n.cancelConfirm ) ) {
 			return;
 		}
 
@@ -111,7 +142,7 @@
 
 		// Якщо крок саме виконується, його завершить сервер; після перезавантаження
 		// сторінка підхопить завдання і доведе скасування до кінця.
-		request( 'esb_cancel', { id: jobId } )
+		request( 'esb_cancel', { id: task.params.id } )
 			.catch( function () {} )
 			.then( function () {
 				window.location.reload();
@@ -119,9 +150,9 @@
 	} );
 
 	if ( config.activeJob ) {
-		jobId = config.activeJob.id;
-		render( config.activeJob );
-		step();
+		runBackup( config.activeJob );
+	} else if ( config.activeRestore ) {
+		runRestore( config.activeRestore );
 	}
 }() );
 
