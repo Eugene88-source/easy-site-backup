@@ -4,7 +4,8 @@
  *
  * Плагіна немає на wordpress.org, тому заголовок «Update URI» вказує на GitHub, а фільтр
  * update_plugins_github.com (WordPress 5.8+) повідомляє WordPress про нову версію.
- * Далі оновлення встановлює сам WordPress — вручну або автоматично.
+ * Встановлює оновлення адміністратор кнопкою на сторінці «Плагіни». Автооновлення плагін
+ * не вмикає; якщо адміністратор увімкне його там сам, далі все робить WordPress.
  *
  * Реліз: тег vX.Y.Z, що збігається з «Version» у заголовку плагіна. Пакет — вкладення
  * easy-site-backup.zip (його збирає .github/workflows/release.yml), а за його відсутності — zipball.
@@ -23,12 +24,14 @@ class ESB_Updater {
     const CACHE = 'esb_latest_release';
 
     /**
-     * Автооновлення вмикається один раз; якщо користувач потім його вимкне, ми не втручаємося.
+     * Позначка версій 0.3–0.4.3, які самі вмикали собі автооновлення. Якщо вона є, автооновлення
+     * вимикається один раз; увімкнене потім адміністратором уже не чіпаємо.
      */
     const AUTO_UPDATE_FLAG = 'esb_auto_update_default';
 
     /**
-     * Власна щогодинна перевірка: WordPress сам перевіряє плагіни лише раз на 12 годин.
+     * Власна щогодинна перевірка: WordPress сам перевіряє плагіни лише раз на 12 годин,
+     * а так кнопка «Оновити» з'являється приблизно за годину після релізу.
      */
     const CHECK_HOOK = 'esb_update_check';
 
@@ -45,7 +48,8 @@ class ESB_Updater {
 
         // «Перевірити знову» на сторінці оновлень видаляє цей transient — тоді й нашу відповідь GitHub перечитуємо.
         add_action( 'delete_site_transient_update_plugins', array( __CLASS__, 'clear_cache' ) );
-        add_action( 'admin_init', array( __CLASS__, 'enable_auto_update_once' ) );
+        // На init, а не admin_init: інакше до першого заходу в адмінку автооновлення WordPress встигло б спрацювати.
+        add_action( 'init', array( __CLASS__, 'disable_auto_update_once' ) );
 
         add_action( self::CHECK_HOOK, array( __CLASS__, 'hourly_check' ) );
         // Не лише при активації: сайти отримують цю версію оновленням, а воно активацію не запускає.
@@ -59,8 +63,8 @@ class ESB_Updater {
     }
 
     /**
-     * Якщо на GitHub є новіша версія — одразу встановлює її стандартним автооновленням WordPress.
-     * Вимкнене на сторінці «Плагіни» автооновлення і відкладання під час бекапу при цьому діють.
+     * Якщо на GitHub є новіша версія — змушує WordPress перевірити оновлення зараз, щоб на сторінці
+     * «Плагіни» з'явилася кнопка «Оновити». Сам нічого не встановлює.
      */
     public static function hourly_check() {
         $release = self::latest_release();
@@ -68,34 +72,18 @@ class ESB_Updater {
             return;
         }
 
-        // Змушуємо WordPress перевірити оновлення зараз, не чекаючи свого 12-годинного інтервалу.
-        // Transient не видаляємо: це скинуло б кеш відповіді GitHub (див. clear_cache).
         $updates = get_site_transient( 'update_plugins' );
+        if ( is_object( $updates ) && isset( $updates->response[ self::basename() ] )
+            && version_compare( $updates->response[ self::basename() ]->new_version, $release['version'], '>=' ) ) {
+            return; // WordPress уже знає про цю версію.
+        }
+
+        // Transient не видаляємо: це скинуло б кеш відповіді GitHub (див. clear_cache).
         if ( is_object( $updates ) ) {
             $updates->last_checked = 0;
             set_site_transient( 'update_plugins', $updates );
         }
         wp_update_plugins();
-
-        $updates = get_site_transient( 'update_plugins' );
-        if ( empty( $updates->response[ self::basename() ] ) ) {
-            return;
-        }
-
-        require_once ABSPATH . 'wp-admin/includes/admin.php';
-        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-
-        $updater = new WP_Automatic_Updater();
-        if ( $updater->is_disabled() || ! WP_Upgrader::create_lock( 'auto_updater' ) ) {
-            return;
-        }
-
-        try {
-            // update() сам перевіряє, чи ввімкнене автооновлення для плагіна (should_update).
-            $updater->update( 'plugin', $updates->response[ self::basename() ] );
-        } finally {
-            WP_Upgrader::release_lock( 'auto_updater' );
-        }
     }
 
     public static function basename() {
@@ -190,18 +178,17 @@ class ESB_Updater {
         return $update;
     }
 
-    public static function enable_auto_update_once() {
-        if ( get_site_option( self::AUTO_UPDATE_FLAG ) ) {
+    /**
+     * Вимикає автооновлення, яке ввімкнули попередні версії плагіна. Лише один раз — за позначкою.
+     */
+    public static function disable_auto_update_once() {
+        if ( ! get_site_option( self::AUTO_UPDATE_FLAG ) ) {
             return;
         }
 
         $plugins = (array) get_site_option( 'auto_update_plugins', array() );
-        if ( ! in_array( self::basename(), $plugins, true ) ) {
-            $plugins[] = self::basename();
-            update_site_option( 'auto_update_plugins', $plugins );
-        }
-
-        update_site_option( self::AUTO_UPDATE_FLAG, 1 );
+        update_site_option( 'auto_update_plugins', array_values( array_diff( $plugins, array( self::basename() ) ) ) );
+        delete_site_option( self::AUTO_UPDATE_FLAG );
     }
 
     public static function clear_cache() {

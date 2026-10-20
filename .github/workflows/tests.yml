@@ -91,6 +91,9 @@ jobs:
       - name: Schedule
         run: php tests/integration/schedule.php "$WP_PATH"
 
+      - name: Updater
+        run: php tests/integration/updater.php "$WP_PATH"
+
       - name: Backup and restore
         run: php tests/integration/backup-restore.php "$WP_PATH"
 

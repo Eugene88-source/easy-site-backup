@@ -2,10 +2,10 @@
 /**
  * Plugin Name: Easy Site Backup
  * Description: Резервне копіювання бази даних і файлів сайту.
- * Version: 0.4.3
+ * Version: 0.4.4
  * Requires at least: 5.8
  * Requires PHP: 7.4
- * Author: Eugene
+ * Author: Eugene88
  * License: GPL-2.0-or-later
  * Text Domain: easy-site-backup
  * Update URI: https://github.com/Eugene88-source/easy-site-backup
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'ESB_VERSION', '0.4.3' );
+define( 'ESB_VERSION', '0.4.4' );
 define( 'ESB_FILE', __FILE__ );
 define( 'ESB_DIR', plugin_dir_path( __FILE__ ) );
 
