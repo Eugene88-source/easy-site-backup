@@ -158,10 +158,6 @@ class ESB_Admin {
             </div>
 
             <div class="esb-card">
-            <?php self::render_schedule(); ?>
-            </div>
-
-            <div class="esb-card">
             <h2><?php esc_html_e( 'Наявні резервні копії', 'easy-site-backup' ); ?></h2>
 
             <?php if ( empty( $jobs ) ) : ?>
@@ -248,6 +244,10 @@ class ESB_Admin {
                 ?>
             </p>
             </div>
+
+            <div class="esb-card" id="esb-schedule">
+            <?php self::render_schedule(); ?>
+            </div>
         </div>
         <?php
     }
@@ -264,6 +264,11 @@ class ESB_Admin {
         $last_job = $last && $last['job'] ? ESB_Job::load( $last['job'] ) : null;
         ?>
         <h2><?php esc_html_e( 'Розклад', 'easy-site-backup' ); ?></h2>
+
+        <?php if ( isset( $_GET['esb_notice'] ) && 'schedule_saved' === $_GET['esb_notice'] ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+            <?php // Тут, а не вгорі: після збереження сторінка відкривається на розкладі. Клас inline не дає WordPress перенести сповіщення під шапку. ?>
+            <div class="notice notice-success inline"><p><?php esc_html_e( 'Розклад збережено.', 'easy-site-backup' ); ?></p></div>
+        <?php endif; ?>
 
         <form id="esb-schedule-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
             <input type="hidden" name="action" value="esb_save_schedule">
@@ -369,9 +374,6 @@ class ESB_Admin {
         if ( 'started' === $notice ) {
             $class   = 'notice-success';
             $message = __( 'Резервне копіювання запущено.', 'easy-site-backup' );
-        } elseif ( 'schedule_saved' === $notice ) {
-            $class   = 'notice-success';
-            $message = __( 'Розклад збережено.', 'easy-site-backup' );
         } elseif ( 'deleted' === $notice ) {
             $count   = isset( $_GET['count'] ) ? absint( $_GET['count'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             $class   = 'notice-success';
@@ -588,7 +590,8 @@ class ESB_Admin {
         $input = isset( $_POST['schedule'] ) && is_array( $_POST['schedule'] ) ? wp_unslash( $_POST['schedule'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- очищається в ESB_Schedule::sanitize().
         ESB_Schedule::save( ESB_Schedule::sanitize( $input ) );
 
-        self::redirect( 'schedule_saved' );
+        // Розклад — внизу сторінки, під списком копій: повертаємося одразу до нього.
+        self::redirect( 'schedule_saved', 'esb-schedule' );
     }
 
     public static function handle_download() {
@@ -698,8 +701,13 @@ class ESB_Admin {
         self::redirect( 'error' );
     }
 
-    private static function redirect( $notice ) {
-        wp_safe_redirect( add_query_arg( 'esb_notice', $notice, admin_url( 'tools.php?page=' . self::PAGE ) ) );
+    /**
+     * @param string $anchor id елемента сторінки, до якого прокрутити.
+     */
+    private static function redirect( $notice, $anchor = '' ) {
+        $url = add_query_arg( 'esb_notice', $notice, admin_url( 'tools.php?page=' . self::PAGE ) );
+
+        wp_safe_redirect( $anchor ? $url . '#' . $anchor : $url );
         exit;
     }
 }
