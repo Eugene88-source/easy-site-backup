@@ -1,3 +1,76 @@
+/* Шапка й картки. Колір — зі схеми адмінки (WP 5.7+), інакше синій WordPress. */
+.esb-wrap {
+	--esb-accent: var(--wp-admin-theme-color, #2271b1);
+	--esb-accent-dark: var(--wp-admin-theme-color-darker-20, #135e96);
+	max-width: 1100px;
+}
+
+.esb-header {
+	display: flex;
+	gap: 16px;
+	align-items: center;
+	margin: 12px 0 8px;
+	padding: 22px 26px;
+	color: #fff;
+	background:
+		radial-gradient(circle at 92% 20%, rgba(255, 255, 255, 0.18) 0, rgba(255, 255, 255, 0) 38%),
+		linear-gradient(135deg, var(--esb-accent) 0%, var(--esb-accent-dark) 100%);
+	border-radius: 10px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.esb-header .dashicons {
+	flex: none;
+	width: 44px;
+	height: 44px;
+	font-size: 44px;
+	opacity: 0.9;
+}
+
+.esb-wrap .esb-header h1 {
+	margin: 0;
+	padding: 0;
+	font-size: 24px;
+	line-height: 1.3;
+	color: #fff;
+}
+
+.esb-header p {
+	margin: 2px 0 0;
+	font-size: 14px;
+	color: rgba(255, 255, 255, 0.85);
+}
+
+.esb-card {
+	margin: 16px 0;
+	padding: 4px 22px 18px;
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 10px;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.esb-card > h2:first-child,
+.esb-card > h2 {
+	margin-top: 16px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid #f0f0f1;
+}
+
+.esb-card .wp-list-table {
+	border-radius: 6px;
+}
+
+@media (max-width: 782px) {
+	.esb-header {
+		padding: 16px 18px;
+	}
+
+	.esb-card {
+		padding: 4px 14px 14px;
+	}
+}
+
 .esb-type {
 	display: block;
 	margin-bottom: 6px;

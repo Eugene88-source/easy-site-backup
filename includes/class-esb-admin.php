@@ -113,13 +113,22 @@ class ESB_Admin {
             }
         );
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e( 'Easy Site Backup', 'easy-site-backup' ); ?></h1>
+        <div class="wrap esb-wrap">
+            <div class="esb-header">
+                <span class="dashicons dashicons-backup" aria-hidden="true"></span>
+                <div>
+                    <h1><?php esc_html_e( 'Easy Site Backup', 'easy-site-backup' ); ?></h1>
+                    <p><?php esc_html_e( 'Резервні копії бази даних і файлів сайту', 'easy-site-backup' ); ?></p>
+                </div>
+            </div>
+            <?php // WordPress переносить сповіщення інших плагінів під цю лінію, а не в шапку. ?>
+            <hr class="wp-header-end">
 
             <?php self::render_notice(); ?>
             <?php self::render_restore_result(); ?>
             <?php self::render_timezone_hint(); ?>
 
+            <div class="esb-card">
             <h2><?php esc_html_e( 'Нова резервна копія', 'easy-site-backup' ); ?></h2>
 
             <form id="esb-start-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" <?php echo $busy ? 'hidden' : ''; ?>>
@@ -146,9 +155,13 @@ class ESB_Admin {
                 </p>
                 <button type="button" id="esb-cancel" class="button"><?php esc_html_e( 'Скасувати', 'easy-site-backup' ); ?></button>
             </div>
+            </div>
 
+            <div class="esb-card">
             <?php self::render_schedule(); ?>
+            </div>
 
+            <div class="esb-card">
             <h2><?php esc_html_e( 'Наявні резервні копії', 'easy-site-backup' ); ?></h2>
 
             <?php if ( empty( $jobs ) ) : ?>
@@ -234,6 +247,7 @@ class ESB_Admin {
                 );
                 ?>
             </p>
+            </div>
         </div>
         <?php
     }
