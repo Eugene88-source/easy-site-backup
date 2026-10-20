@@ -129,6 +129,12 @@
 	border-radius: 4px;
 }
 
+/* WordPress дає <code> власний фон — усередині <pre> він ліг би окремою смужкою на кожен рядок. */
+.esb-exposed pre code {
+	padding: 0;
+	background: none;
+}
+
 .esb-storage-note {
 	margin-top: 12px;
 }
