@@ -262,5 +262,6 @@ class ESB_Schedule {
         wp_unschedule_hook( self::HOOK );
         wp_unschedule_hook( ESB_Backup::CRON_HOOK );
         wp_unschedule_hook( ESB_Restore::CRON_HOOK );
+        wp_unschedule_hook( ESB_Updater::CHECK_HOOK );
     }
 }

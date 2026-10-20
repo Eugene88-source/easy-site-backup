@@ -27,6 +27,16 @@ class ESB_Updater {
      */
     const AUTO_UPDATE_FLAG = 'esb_auto_update_default';
 
+    /**
+     * Власна щогодинна перевірка: WordPress сам перевіряє плагіни лише раз на 12 годин.
+     */
+    const CHECK_HOOK = 'esb_update_check';
+
+    /**
+     * Трохи менше за годину, щоб щогодинна перевірка завжди бачила свіжу відповідь GitHub.
+     */
+    const CACHE_TTL = 50 * MINUTE_IN_SECONDS;
+
     public static function init() {
         add_filter( 'update_plugins_github.com', array( __CLASS__, 'check' ), 10, 3 );
         add_filter( 'plugins_api', array( __CLASS__, 'details' ), 10, 3 );
@@ -36,6 +46,56 @@ class ESB_Updater {
         // «Перевірити знову» на сторінці оновлень видаляє цей transient — тоді й нашу відповідь GitHub перечитуємо.
         add_action( 'delete_site_transient_update_plugins', array( __CLASS__, 'clear_cache' ) );
         add_action( 'admin_init', array( __CLASS__, 'enable_auto_update_once' ) );
+
+        add_action( self::CHECK_HOOK, array( __CLASS__, 'hourly_check' ) );
+        // Не лише при активації: сайти отримують цю версію оновленням, а воно активацію не запускає.
+        add_action( 'init', array( __CLASS__, 'schedule_check' ) );
+    }
+
+    public static function schedule_check() {
+        if ( ! wp_next_scheduled( self::CHECK_HOOK ) ) {
+            wp_schedule_event( time() + 5 * MINUTE_IN_SECONDS, 'hourly', self::CHECK_HOOK );
+        }
+    }
+
+    /**
+     * Якщо на GitHub є новіша версія — одразу встановлює її стандартним автооновленням WordPress.
+     * Вимкнене на сторінці «Плагіни» автооновлення і відкладання під час бекапу при цьому діють.
+     */
+    public static function hourly_check() {
+        $release = self::latest_release();
+        if ( ! $release || ! version_compare( $release['version'], ESB_VERSION, '>' ) ) {
+            return;
+        }
+
+        // Змушуємо WordPress перевірити оновлення зараз, не чекаючи свого 12-годинного інтервалу.
+        // Transient не видаляємо: це скинуло б кеш відповіді GitHub (див. clear_cache).
+        $updates = get_site_transient( 'update_plugins' );
+        if ( is_object( $updates ) ) {
+            $updates->last_checked = 0;
+            set_site_transient( 'update_plugins', $updates );
+        }
+        wp_update_plugins();
+
+        $updates = get_site_transient( 'update_plugins' );
+        if ( empty( $updates->response[ self::basename() ] ) ) {
+            return;
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/admin.php';
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+
+        $updater = new WP_Automatic_Updater();
+        if ( $updater->is_disabled() || ! WP_Upgrader::create_lock( 'auto_updater' ) ) {
+            return;
+        }
+
+        try {
+            // update() сам перевіряє, чи ввімкнене автооновлення для плагіна (should_update).
+            $updater->update( 'plugin', $updates->response[ self::basename() ] );
+        } finally {
+            WP_Upgrader::release_lock( 'auto_updater' );
+        }
     }
 
     public static function basename() {
@@ -173,8 +233,8 @@ class ESB_Updater {
             $release = self::parse_release( json_decode( wp_remote_retrieve_body( $response ), true ) );
         }
 
-        // Невдалу перевірку теж кешуємо (на годину), щоб не впертися в ліміт GitHub API — 60 запитів на годину з IP.
-        set_site_transient( self::CACHE, $release ? $release : '', $release ? 6 * HOUR_IN_SECONDS : HOUR_IN_SECONDS );
+        // Невдалу перевірку теж кешуємо, щоб не впертися в ліміт GitHub API — 60 запитів на годину з IP.
+        set_site_transient( self::CACHE, $release ? $release : '', self::CACHE_TTL );
 
         return $release;
     }
