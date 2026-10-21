@@ -14,11 +14,18 @@ $keep     = esb_test_job_ids();
 $post_id  = (int) $wpdb->get_var( "SELECT ID FROM {$wpdb->posts} WHERE post_type = 'post' ORDER BY ID LIMIT 1" );
 $style    = get_stylesheet_directory() . '/style.css';
 $new_file = ABSPATH . 'esb-new-file.txt';
+// Drop-in кешу, прив'язаний до сервера, не відновлюється. advanced-cache.php без WP_CACHE не
+// завантажується, тож тестовий файл сайту не шкодить; справжній чужий не чіпаємо.
+$dropin   = WP_CONTENT_DIR . '/advanced-cache.php';
+$dropin_t = ! file_exists( $dropin );
 
 $wpdb->update( $wpdb->posts, array( 'post_title' => 'Original title' ), array( 'ID' => $post_id ) );
 delete_option( 'esb_test_marker' );
 @unlink( $new_file );
 $style_md5 = md5_file( $style );
+if ( $dropin_t ) {
+    file_put_contents( $dropin, "<?php\n// esb test: from backup\n" );
+}
 
 echo "== full backup\n";
 $job = esb_test_backup( 'full' );
@@ -29,6 +36,9 @@ $wpdb->update( $wpdb->posts, array( 'post_title' => 'CHANGED' ), array( 'ID' => 
 update_option( 'esb_test_marker', 'after-backup' );
 file_put_contents( $style, "\n/* changed after backup */\n", FILE_APPEND );
 file_put_contents( $new_file, 'new' );
+if ( $dropin_t ) {
+    file_put_contents( $dropin, "<?php\n// esb test: live\n" );
+}
 
 echo "== access\n";
 $result = esb_test_ajax( array( 'action' => 'esb_restore_step', 'token' => 'wrong' ) );
@@ -52,6 +62,9 @@ check( null === esb_test_option( 'esb_test_marker' ), 'option added after backup
 clearstatcache();
 check( md5_file( $style ) === $style_md5, 'theme file restored' );
 check( file_exists( $new_file ), 'file created after backup kept' );
+if ( $dropin_t ) {
+    check( false !== strpos( file_get_contents( $dropin ), 'live' ), 'cache drop-in not restored' );
+}
 check( array() === esb_test_temp_tables(), 'no esbr_/esbo_ tables left' );
 check( 0 === strpos( ESB_Restore::sql_path( $final ), $job->dir() . '/' ), 'dump extracted into the backup folder (random name), not storage root' );
 check( ! file_exists( ESB_Restore::sql_path( $final ) ), 'restore.sql removed' );
@@ -82,6 +95,9 @@ check( array() === esb_test_temp_tables(), 'temp tables cleaned after failure' )
 
 delete_option( 'esb_test_marker' );
 @unlink( $new_file );
+if ( $dropin_t ) {
+    @unlink( $dropin );
+}
 ESB_Restore::mark_seen();
 esb_test_cleanup( $keep );
 

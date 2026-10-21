@@ -1048,15 +1048,24 @@ class ESB_Restore {
 
     /**
      * Що не відновлюється: налаштування підключення до бази, сам плагін, який зараз
-     * виконує відновлення, і тека сховища. Шляхи на «/» — теки.
+     * виконує відновлення, тека сховища і drop-ins кешу. Останні прив'язані до сервера
+     * (Redis, Memcached): на сервері без того самого кешу сайт після відновлення не відкриється.
+     * Шляхи на «/» — теки.
      */
     private static function skipped_paths( $root ) {
-        $paths = array( 'wp-config.php', '.maintenance' );
+        $paths   = array( 'wp-config.php', '.maintenance' );
+        $content = wp_normalize_path( WP_CONTENT_DIR );
 
         foreach ( array( ESB_Storage::dir(), ESB_Storage::uploads_dir(), wp_normalize_path( ESB_DIR ) ) as $dir ) {
             $dir = trailingslashit( $dir );
             if ( 0 === strpos( $dir, $root . '/' ) ) {
                 $paths[] = substr( $dir, strlen( $root ) + 1 );
+            }
+        }
+
+        if ( 0 === strpos( $content . '/', $root . '/' ) ) {
+            foreach ( array( 'object-cache.php', 'advanced-cache.php' ) as $name ) {
+                $paths[] = substr( $content . '/' . $name, strlen( $root ) + 1 );
             }
         }
 
