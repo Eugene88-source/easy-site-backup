@@ -138,7 +138,7 @@ class ESB_Zip_Reader {
                 }
             }
 
-            self::write( $out, $chunk, $crc, $written );
+            self::write( $out, $chunk, $crc, $written, $entry );
         }
 
         if ( $inflate ) {
@@ -146,7 +146,7 @@ class ESB_Zip_Reader {
             if ( false === $chunk ) {
                 throw self::damaged( $entry );
             }
-            self::write( $out, $chunk, $crc, $written );
+            self::write( $out, $chunk, $crc, $written, $entry );
         }
 
         // sprintf, а не порівняння чисел: на 32-бітному PHP unpack('V') дає від'ємні значення.
@@ -326,9 +326,17 @@ class ESB_Zip_Reader {
         return $data;
     }
 
-    private static function write( $out, $data, $crc, &$written ) {
+    /**
+     * Дані понад заявлений розмір — пошкоджений або підроблений архів (ZIP-бомба):
+     * зупиняємось одразу, а не після того, як розпаковане заповнить диск.
+     */
+    private static function write( $out, $data, $crc, &$written, array $entry ) {
         if ( '' === $data ) {
             return;
+        }
+
+        if ( $written + strlen( $data ) > $entry['size'] ) {
+            throw self::damaged( $entry );
         }
 
         hash_update( $crc, $data );

@@ -64,6 +64,7 @@ class ESB_Admin {
 
         // До виводу сторінки: переносимо сховище поза публічну теку, поки ще не показано шляхи.
         add_action( 'load-' . self::$hook, array( __CLASS__, 'maybe_relocate' ) );
+        add_action( 'load-' . self::$hook, array( 'ESB_Upload', 'cleanup_stale' ) );
     }
 
     /**
@@ -186,6 +187,7 @@ class ESB_Admin {
             <?php self::render_notice(); ?>
             <?php self::render_restore_result(); ?>
             <?php self::render_timezone_hint(); ?>
+            <?php self::render_content_outside_notice(); ?>
             <?php self::render_relocated_notice(); ?>
             <?php self::render_exposure_warning(); ?>
 
@@ -542,6 +544,33 @@ class ESB_Admin {
                     /* translators: %s: посилання на загальні налаштування */
                     esc_html__( 'Часовий пояс сайту — UTC, а у вашого комп\'ютера інший. Дати на цій сторінці показано за вашим часом, а в лозі — за часом сайту. Змінити пояс сайту: %s.', 'easy-site-backup' ),
                     '<a href="' . esc_url( admin_url( 'options-general.php' ) ) . '">' . esc_html__( 'Налаштування → Загальні', 'easy-site-backup' ) . '</a>'
+                );
+                ?>
+            </p>
+        </div>
+        <?php
+    }
+
+    /**
+     * Копія файлів охоплює лише теку WordPress (ABSPATH). Якщо wp-content винесено за її межі
+     * (Bedrock, перенесений wp-content), теми, плагіни й медіа в копію не потрапляють.
+     */
+    private static function render_content_outside_notice() {
+        $root    = untrailingslashit( wp_normalize_path( ABSPATH ) );
+        $content = untrailingslashit( wp_normalize_path( WP_CONTENT_DIR ) );
+
+        if ( 0 === strpos( $content . '/', $root . '/' ) ) {
+            return;
+        }
+        ?>
+        <div class="notice notice-warning">
+            <p>
+                <?php
+                printf(
+                    /* translators: 1: тека wp-content, 2: тека WordPress */
+                    esc_html__( 'Тека %1$s лежить поза текою WordPress %2$s, тож теми, плагіни й медіа з неї в резервну копію не потрапляють. Копія містить базу даних і файли самого WordPress.', 'easy-site-backup' ),
+                    '<code>' . esc_html( $content ) . '</code>',
+                    '<code>' . esc_html( $root ) . '</code>'
                 );
                 ?>
             </p>

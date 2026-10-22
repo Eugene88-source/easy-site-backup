@@ -123,6 +123,22 @@ try {
 }
 $reader->close();
 
+// ZIP-бомба: заявлений розмір менший за справжній — зупиняємось, не записавши більше заявленого.
+foreach ( array( 'files/text.txt', 'files/bin.png' ) as $name ) {
+    $entry         = $seen[ $name ];
+    $entry['size'] = 1000;
+    $reader        = new ESB_Zip_Reader( $zip );
+    $out           = fopen( 'php://temp', 'w+b' );
+    try {
+        $reader->extract( $entry, $out );
+        check( false, "oversized entry detected ($name)" );
+    } catch ( RuntimeException $e ) {
+        check( false !== strpos( $e->getMessage(), 'пошкоджено' ) && ftell( $out ) <= 1000, "oversized entry detected ($name), written " . ftell( $out ) );
+    }
+    fclose( $out );
+    $reader->close();
+}
+
 // Обрізаний архів.
 file_put_contents( "$dir/cut.zip", substr( file_get_contents( $zip ), 0, 1000 ) );
 try {

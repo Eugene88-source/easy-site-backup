@@ -134,6 +134,20 @@ ESB_Storage::delete_dir( $start['data']['id'] );
 $anon = wp_remote_post( admin_url( 'admin-ajax.php' ), array( 'body' => array( 'action' => 'esb_upload_start', 'name' => 'a.zip', 'size' => 1 ) ) );
 check( '0' === wp_remote_retrieve_body( $anon ) || 400 <= wp_remote_retrieve_response_code( $anon ), 'not available without login' );
 
+echo "== abandoned uploads cleaned up\n";
+$stale = ESB_Upload::start( 'stale.zip', 1000 );
+$fresh = ESB_Upload::start( 'fresh.zip', 1000 );
+file_put_contents( $stale->path( ESB_Upload::PART ), str_repeat( 'x', 100 ) );
+// save() ставить updated = зараз, тож давність пишемо в job.json напряму.
+$stale->data['updated'] = time() - 2 * DAY_IN_SECONDS;
+file_put_contents( $stale->path( 'job.json' ), wp_json_encode( $stale->data ) );
+
+$deleted = ESB_Upload::cleanup_stale();
+check( 1 === $deleted && ! is_dir( $stale->dir() ), 'upload idle for 2 days removed with its .part' );
+check( null !== ESB_Job::load( $fresh->id ), 'fresh upload kept' );
+check( null !== ESB_Job::load( $uploaded->id ), 'finished uploaded copy kept' );
+ESB_Storage::delete_dir( $fresh->id );
+
 echo "== restore from uploaded copy\n";
 $state  = ESB_Restore::start( $uploaded->id );
 $status = esb_test_restore_steps( $state['token'] );

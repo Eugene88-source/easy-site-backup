@@ -1072,8 +1072,14 @@ class ESB_Restore {
         return $paths;
     }
 
+    /**
+     * Без урахування регістру: на Windows і macOS «WP-CONFIG.php» — той самий файл, що й «wp-config.php».
+     */
     private static function is_skipped( $relative, array $skip ) {
+        $relative = strtolower( $relative );
+
         foreach ( $skip as $path ) {
+            $path = strtolower( $path );
             if ( '/' === substr( $path, -1 ) ? 0 === strpos( $relative, $path ) : $relative === $path ) {
                 return true;
             }

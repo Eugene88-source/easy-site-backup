@@ -25,6 +25,30 @@ class ESB_Upload {
     const REQUEST_OVERHEAD = 64 * KB_IN_BYTES;
 
     /**
+     * Через скільки секунд без нових частин завантаження вважається покинутим.
+     */
+    const STALE_SECONDS = DAY_IN_SECONDS;
+
+    /**
+     * Видаляє покинуті завантаження (закрили вкладку посеред файлу): інакше .part на кілька ГБ
+     * лишався б на диску, доки його не видалять вручну.
+     *
+     * @return int Скільки видалено.
+     */
+    public static function cleanup_stale() {
+        $expired = time() - self::STALE_SECONDS;
+        $deleted = 0;
+
+        foreach ( ESB_Storage::list_jobs() as $job ) {
+            if ( 'uploading' === $job->data['status'] && $job->data['updated'] < $expired && ESB_Storage::delete_dir( $job->id ) ) {
+                $deleted++;
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
      * @return int Розмір частини, яку прийме цей сервер.
      */
     public static function chunk_size() {
@@ -44,6 +68,9 @@ class ESB_Upload {
         if ( $size <= 0 ) {
             return new WP_Error( 'esb_upload_empty', __( 'Файл порожній.', 'easy-site-backup' ) );
         }
+
+        // Місце, яке займають покинуті завантаження, звільняємо до перевірки вільного місця.
+        self::cleanup_stale();
 
         try {
             ESB_Storage::require_space( $size + ESB_Storage::SPACE_MARGIN, __( 'завантаження архіву', 'easy-site-backup' ) );

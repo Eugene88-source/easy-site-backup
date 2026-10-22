@@ -1,0 +1,28 @@
+# Збірка релізу (.github/workflows/release.yml) і готові архіви плагіна чи резервних копій.
+/build/
+*.zip
+
+# Залежності інструментів (phpcs, PHPCompatibility тощо), якщо ставити їх у теку репозиторію.
+/vendor/
+/node_modules/
+composer.lock
+.phpcs-cache
+.phpunit.result.cache
+
+# Резервні копії й тимчасові файли, які можуть лишитися після локальних тестів.
+esb-backups*/
+*.part
+*.tmp
+*.esb-restore
+*.log
+
+# Редактори та IDE.
+.idea/
+.vscode/
+*.swp
+*~
+
+# Службові файли ОС.
+.DS_Store
+Thumbs.db
+desktop.ini
