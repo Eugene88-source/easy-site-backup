@@ -170,6 +170,12 @@ class ESB_Backup {
             return $job;
         }
 
+        if ( $job && 'done' === $job->data['status'] ) {
+            // Крок убили між збереженням готової копії і прибиранням (див. finalize()). Лише тимчасові
+            // файли: повідомляти про завершення (ротація, лист) з простої перевірки стану не будемо.
+            self::remove_temp_files( $job );
+        }
+
         if ( $id ) {
             delete_option( self::ACTIVE_OPTION );
         }
@@ -541,7 +547,7 @@ class ESB_Backup {
 
             $state['started'] = true;
             $state['pk']      = self::numeric_primary_key( $table );
-            $state['order']   = $state['pk'] ? array() : self::unique_key_columns( $table );
+            $state['order']   = $state['pk'] ? array() : self::order_columns( $table );
             $state['key']     = null;
             $state['offset']  = 0;
         }
@@ -561,7 +567,7 @@ class ESB_Backup {
             $sql = "SELECT * FROM {$quoted}{$where} ORDER BY {$pk} LIMIT " . self::ROWS_PER_QUERY;
         } else {
             // Без ORDER BY порядок рядків між запитами не гарантовано — порції могли б перекриватися
-            // чи пропускати рядки. Упорядковуємо за унікальним ключем, якщо він є.
+            // чи пропускати рядки (див. order_columns()).
             $order = empty( $state['order'] ) ? '' : ' ORDER BY ' . implode( ', ', array_map( array( __CLASS__, 'quote' ), $state['order'] ) );
             $sql   = sprintf( 'SELECT * FROM %s%s LIMIT %d, %d', $quoted, $order, $state['offset'], self::ROWS_PER_QUERY );
         }
@@ -616,13 +622,23 @@ class ESB_Backup {
     }
 
     /**
-     * @return string[] Колонки первинного ключа або іншого унікального ключа без NULL; порожньо — такого немає.
+     * Порядок рядків для пагінації через OFFSET: первинний ключ або інший унікальний ключ без NULL.
+     *
+     * Без такого ключа — усі колонки: однакові рядки взаємозамінні, тож порядок однозначний. Відоме
+     * обмеження: довгі TEXT/BLOB, що збігаються в перших max_sort_length (1024) байтах, MySQL вважає
+     * рівними, і їхній порядок між порціями може змінитися. До того ж кожна порція сортує всю таблицю.
+     * Повне рішення — інший спосіб читання таблиці; поки таблиці зовсім без унікального ключа рідкісні
+     * й зазвичай невеликі (журнали плагінів).
+     *
+     * @return string[]
      */
-    private static function unique_key_columns( $table ) {
+    private static function order_columns( $table ) {
         global $wpdb;
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- назву таблиці екрановано в quote().
-        $rows = (array) $wpdb->get_results( 'SHOW KEYS FROM ' . self::quote( $table ), ARRAY_A );
+        $quoted = self::quote( $table );
+
+        // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- назву таблиці екрановано в quote().
+        $rows = (array) $wpdb->get_results( "SHOW KEYS FROM {$quoted}", ARRAY_A );
         $keys = array();
 
         foreach ( $rows as $row ) {
@@ -636,8 +652,9 @@ class ESB_Backup {
 
         $keys = array_filter( $keys );
         if ( ! $keys ) {
-            return array();
+            return (array) $wpdb->get_col( "SHOW COLUMNS FROM {$quoted}" );
         }
+        // phpcs:enable
 
         $columns = isset( $keys['PRIMARY'] ) ? $keys['PRIMARY'] : reset( $keys );
         ksort( $columns );
@@ -928,12 +945,13 @@ class ESB_Backup {
         $job->data['size']     = filesize( $job->path( ESB_Storage::ARCHIVE ) );
         $job->data['status']   = 'done';
         $job->data['finished'] = time();
+        $job->log( 'Готово. Розмір архіву: ' . size_format( $job->size(), 1 ) );
         $job->save();
 
-        // Видаляємо лише після збереження стану: якщо крок переб'ють раніше, повтор допише
-        // центральний каталог наново, а без archive.cd він був би зіпсований.
+        // Тимчасові файли — лише після збереження стану: якщо крок переб'ють раніше, повтор допише
+        // центральний каталог наново, а без archive.cd він був би зіпсований. Якщо переб'ють після,
+        // їх прибере active_job().
         self::remove_temp_files( $job );
-        $job->log( 'Готово. Розмір архіву: ' . size_format( $job->size(), 1 ) );
 
         delete_option( self::ACTIVE_OPTION );
 

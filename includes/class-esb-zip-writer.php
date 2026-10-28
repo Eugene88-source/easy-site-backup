@@ -56,7 +56,14 @@ class ESB_Zip_Writer {
         $this->entries = (int) $state['entries'];
 
         $this->fh = self::open_at( $path, $this->offset );
-        $this->cd = self::open_at( $cd_path, $this->cd_size );
+
+        try {
+            $this->cd = self::open_at( $cd_path, $this->cd_size );
+        } catch ( RuntimeException $e ) {
+            // Інакше архів лишився б відкритим до кінця запиту, і на Windows його не вдалося б видалити.
+            $this->close();
+            throw $e;
+        }
     }
 
     public function state() {

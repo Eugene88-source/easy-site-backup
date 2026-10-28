@@ -148,40 +148,97 @@ check( null !== ESB_Job::load( $fresh->id ), 'fresh upload kept' );
 check( null !== ESB_Job::load( $uploaded->id ), 'finished uploaded copy kept' );
 ESB_Storage::delete_dir( $fresh->id );
 
-echo "== tampered dump: only statements ESB_Backup writes\n";
-// Підроблений архів: INSERT … SELECT скопіював би дані з інших таблиць чи баз.
+echo "== tampered dumps: only statements ESB_Backup writes\n";
 global $wpdb;
 $evil_table = $wpdb->base_prefix . 'esb_evil';
-$evil_dir   = get_temp_dir() . 'esb-evil-' . getmypid();
-wp_mkdir_p( $evil_dir );
-$writer = new ESB_Zip_Writer( "$evil_dir/evil.zip", "$evil_dir/evil.cd", array( 'size' => 0, 'cd_size' => 0, 'entries' => 0 ) );
-$writer->add_string( 'database-001.sql', "CREATE TABLE `{$evil_table}` (\n  `v` text\n);\nINSERT INTO `{$evil_table}` SELECT user_pass FROM `{$wpdb->users}`;\n" );
-$writer->add_string(
-    'manifest.json',
-    wp_json_encode(
-        array(
-            'type'         => 'db',
-            'home_url'     => home_url(),
-            'table_prefix' => $wpdb->base_prefix,
-            'tables'       => array( $evil_table ),
-            'db_parts'     => 1,
-        )
-    )
-);
-$writer->finish();
-$writer->close();
 
-$evil = ESB_Upload::start( 'evil.zip', filesize( "$evil_dir/evil.zip" ) );
-ESB_Upload::append( $evil->id, 0, "$evil_dir/evil.zip" );
-$evil   = ESB_Upload::finish( $evil->id );
-$state  = ESB_Restore::start( $evil->id );
-$status = esb_test_restore_steps( $state['token'] );
-check( $status && 'failed' === $status['status'] && false !== strpos( $status['error'], 'Невідома інструкція' ), 'INSERT … SELECT rejected: ' . ( $status ? $status['error'] : '-' ) );
+/**
+ * Відновлює архів «лише база» з дампом $dump ({T} — тестова таблиця, {U} — таблиця користувачів).
+ * Відновлюється лише тестова таблиця, тож решта бази сайту лишається як є.
+ */
+function esb_test_dump_restore( $dump ) {
+    global $wpdb, $evil_table;
+
+    $dir = get_temp_dir() . 'esb-evil-' . getmypid();
+    wp_mkdir_p( $dir );
+    $writer = new ESB_Zip_Writer( "$dir/evil.zip", "$dir/evil.cd", array( 'size' => 0, 'cd_size' => 0, 'entries' => 0 ) );
+    $writer->add_string( 'database-001.sql', str_replace( array( '{T}', '{U}' ), array( $evil_table, $wpdb->users ), $dump ) );
+    $writer->add_string(
+        'manifest.json',
+        wp_json_encode(
+            array(
+                'type'         => 'db',
+                'home_url'     => home_url(),
+                'table_prefix' => $wpdb->base_prefix,
+                'tables'       => array( $evil_table ),
+                'db_parts'     => 1,
+            )
+        )
+    );
+    $writer->finish();
+    $writer->close();
+
+    $job = ESB_Upload::start( 'evil.zip', filesize( "$dir/evil.zip" ) );
+    ESB_Upload::append( $job->id, 0, "$dir/evil.zip" );
+    $job    = ESB_Upload::finish( $job->id );
+    $state  = ESB_Restore::start( $job->id );
+    $status = esb_test_restore_steps( $state['token'] );
+
+    ESB_Restore::mark_seen();
+    ESB_Storage::delete_dir( $job->id );
+    array_map( 'unlink', glob( "$dir/*" ) );
+    rmdir( $dir );
+
+    return $status;
+}
+
+$create = "CREATE TABLE `{T}` (\n  `v` text\n) ENGINE=InnoDB;\n";
+$evil   = array(
+    'INSERT … SELECT'           => $create . "INSERT INTO `{T}` SELECT user_pass FROM `{U}`;\n",
+    'subquery in VALUES'        => $create . "INSERT INTO `{T}` VALUES\n((SELECT user_pass FROM `{U}` LIMIT 1));\n",
+    'unquoted value'            => $create . "INSERT INTO `{T}` VALUES\n(@a);\n",
+    'CREATE … SELECT'           => "CREATE TABLE `{T}` (\n  `v` text\n) SELECT user_pass AS v FROM `{U}`;\n",
+    'SELECT hidden by comment'  => "CREATE TABLE `{T}` (\n  `v` text /* ' */\n) SELECT user_pass AS v FROM `{U}` /* ' */;\n",
+    'FEDERATED engine'          => "CREATE TABLE `{T}` (\n  `v` text\n) ENGINE=FEDERATED CONNECTION='mysql://u:p@example.com/db/t';\n",
+    'engine name in quotes'     => "CREATE TABLE `{T}` (\n  `v` text\n) COMMENT='mysql://u:p@example.com/db/t' ENGINE='FEDERATED';\n",
+    'engine behind comment'     => "CREATE TABLE `{T}` (\n  `v` text\n) ENGINE = /*!*/ FEDERATED;\n",
+    'backslash before newline'  => $create . "INSERT INTO `{T}` VALUES\n('a\\\nb');\n",
+    'SET user variable'         => "SET @a := (SELECT user_pass FROM `{U}` LIMIT 1);\n" . $create,
+    'SET GLOBAL'                => "SET GLOBAL general_log = 1;\n" . $create,
+);
+foreach ( $evil as $label => $dump ) {
+    $status = esb_test_dump_restore( $dump );
+    check( $status && 'failed' === $status['status'] && false !== strpos( $status['error'], 'Невідома інструкція' ), "$label rejected: " . ( $status ? $status['error'] : '-' ) );
+}
 check( array() === esb_test_temp_tables(), 'no temporary tables left' );
-ESB_Restore::mark_seen();
-ESB_Storage::delete_dir( $evil->id );
-array_map( 'unlink', glob( "$evil_dir/*" ) );
-rmdir( $evil_dir );
+check( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $evil_table ) ), 'rejected dumps created no table' );
+
+// Справжній дамп із «незручними» значеннями: лапки обох видів екранування, зворотна коса риска,
+// екроване перенесення рядка, порожній рядок, NULL, «SELECT» і коментарі всередині рядків.
+$good   = <<<'SQL'
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
+SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';
+
+DROP TABLE IF EXISTS `{T}`;
+CREATE TABLE `{T}` (
+  `v` text COMMENT 'SELECT -- # /* it''s */',
+  `n` int DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO `{T}` VALUES
+('it\'s','1'),
+('a''b',NULL),
+('back\\slash\nline','2'),
+('',NULL);
+
+SET FOREIGN_KEY_CHECKS = 1;
+SQL;
+$status = esb_test_dump_restore( $good . "\n" );
+check( $status && 'done' === $status['status'], 'valid dump with tricky values restored: ' . ( $status ? $status['error'] : '-' ) );
+$rows = $wpdb->get_results( "SELECT v, n FROM `{$evil_table}`", ARRAY_N ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+check( array( array( "it's", '1' ), array( "a'b", null ), array( "back\\slash\nline", '2' ), array( '', null ) ) === $rows, 'values restored exactly' );
+$wpdb->query( "DROP TABLE IF EXISTS `{$evil_table}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
 echo "== restore from uploaded copy\n";
 $state  = ESB_Restore::start( $uploaded->id );

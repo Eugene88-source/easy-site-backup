@@ -48,14 +48,15 @@ class ESB_Restore {
     const MANIFEST_MAX_BYTES = 16 * MB_IN_BYTES;
 
     /**
-     * Що може йти після назви таблиці в інструкціях дампу: [текст, чи це вся решта інструкції].
-     * Без цього пройшло б, наприклад, «INSERT INTO `t` SELECT … FROM інша_база».
+     * Налаштування сесії, які пише ESB_Backup::db_init(); група 1 — що саме налаштовується.
      */
-    const STATEMENT_TAILS = array(
-        'DROP TABLE IF EXISTS' => array( ';', true ),
-        'CREATE TABLE'         => array( ' (', false ),
-        'INSERT INTO'          => array( " VALUES\n", false ),
-    );
+    const SET_PATTERN = "/^SET (NAMES(?= \\w+;\\z)|FOREIGN_KEY_CHECKS(?= = [01];\\z)|SQL_MODE(?= = 'NO_AUTO_VALUE_ON_ZERO';\\z))/";
+
+    /**
+     * Рушії таблиць, дозволені в дампі. Інші (FEDERATED, CONNECT, MERGE, SPIDER…) можуть читати
+     * чужі таблиці, файли сервера чи інші сервери.
+     */
+    const ENGINES = array( 'innodb', 'myisam', 'aria', 'memory', 'heap', 'archive', 'csv', 'blackhole', 'rocksdb', 'tokudb' );
 
     /**
      * Фази, що не діляться на частини (див. ESB_Backup::FRESH_STEP_PHASES). db_extract — заради
@@ -125,6 +126,8 @@ class ESB_Restore {
             'seen'      => false,
             'has_db'    => false,
             'has_files' => false,
+            // Архів з комп'ютера міг бути підроблений — його дамп перевіряється повністю (див. execute()).
+            'strict'    => ! empty( $job->data['uploaded'] ),
             'db'        => array(
                 // Частини дампу (записи архіву) по черзі: розпаковується й імпортується по одній.
                 'entries'  => array(),
@@ -215,8 +218,12 @@ class ESB_Restore {
         }
 
         try {
-            // Стан перечитуємо під блокуванням: його міг змінити попередній крок.
+            // Стан перечитуємо під блокуванням: його міг змінити попередній крок, а за цей час могло
+            // навіть початися інше відновлення — тому й токен звіряємо наново.
             $state = self::load();
+            if ( $state && ! hash_equals( $state['token'], $token ) ) {
+                $state = null;
+            }
             if ( $state && 'running' === $state['status'] ) {
                 self::run( $state );
             }
@@ -604,6 +611,10 @@ class ESB_Restore {
                 throw new RuntimeException( __( 'Не вдалося прочитати дамп бази даних.', 'easy-site-backup' ) );
             }
 
+            // Режим SQL задаємо самі, а не лише з дампу: перевірка значень у execute() розбирає «\'» як
+            // екрановану лапку, а з NO_BACKSLASH_ESCAPES у режимі сервера MySQL закінчив би на ній рядок.
+            self::query( "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO'" );
+
             // Кожен крок — нове з'єднання з базою, тож налаштування сесії треба повторити.
             foreach ( $db['sets'] as $set ) {
                 self::query( $set );
@@ -670,16 +681,24 @@ class ESB_Restore {
         $resumed       = self::$resumed;
         self::$resumed = false;
 
-        if ( preg_match( '/^SET\s+(\w+)/i', $sql, $m ) ) {
-            $state['db']['sets'][ strtoupper( $m[1] ) ] = $sql;
+        // Дозволено лише те, що пише ESB_Backup: так з архіву не виконається довільний SQL. Дамп архіву
+        // з комп'ютера перевіряється повністю, щоб з нього не скопіювалися дані з інших таблиць чи баз.
+        // Копію, зняту на цьому сервері, написав сам плагін; повна перевірка могла б відкинути її
+        // таблиці з рідкісними параметрами (DATA DIRECTORY тощо), тож для неї — лише початок інструкції.
+        // Відновлення, почате до 1.1.4, не знає, звідки архів, — перевіряємо повністю.
+        $strict = ! isset( $state['strict'] ) || $state['strict'];
+
+        if ( 0 === strpos( $sql, 'SET ' ) ) {
+            if ( ! preg_match( self::SET_PATTERN, $sql, $m ) ) {
+                throw new RuntimeException( __( 'Невідома інструкція в дампі бази даних.', 'easy-site-backup' ) );
+            }
+            $state['db']['sets'][ $m[1] ] = $sql;
             self::query( $sql );
             return;
         }
 
-        // Дозволено лише те, що пише ESB_Backup: так з архіву не виконається довільний SQL.
-        // Перевіряємо й те, що йде після назви таблиці (див. STATEMENT_TAILS).
         if ( ! preg_match( '/^(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) (`(?:[^`]|``)+`)/', $sql, $m )
-            || ! self::has_tail( $sql, strlen( $m[0] ), self::STATEMENT_TAILS[ $m[1] ] )
+            || ( $strict && ! self::is_allowed_rest( $m[1], $sql, strlen( $m[0] ) ) )
         ) {
             throw new RuntimeException( __( 'Невідома інструкція в дампі бази даних.', 'easy-site-backup' ) );
         }
@@ -728,14 +747,115 @@ class ESB_Restore {
     }
 
     /**
-     * Після назви таблиці інструкція продовжується саме так, як її пише ESB_Backup.
-     *
-     * @param array $tail Елемент STATEMENT_TAILS.
+     * Чи продовжується інструкція після назви таблиці (з позиції $offset) так, як її пише ESB_Backup.
      */
-    private static function has_tail( $sql, $offset, array $tail ) {
-        list( $text, $whole ) = $tail;
+    private static function is_allowed_rest( $verb, $sql, $offset ) {
+        switch ( $verb ) {
+            case 'DROP TABLE IF EXISTS':
+                return ';' === substr( $sql, $offset );
 
-        return $text === ( $whole ? substr( $sql, $offset ) : substr( $sql, $offset, strlen( $text ) ) );
+            case 'CREATE TABLE':
+                return ' (' === substr( $sql, $offset, 2 ) && self::is_safe_create( substr( $sql, $offset ) );
+
+            default:
+                return " VALUES\n" === substr( $sql, $offset, 8 ) && self::is_literal_rows( $sql, $offset + 8 );
+        }
+    }
+
+    /**
+     * Структура таблиці з SHOW CREATE TABLE: лише опис колонок, ключів і параметрів таблиці.
+     *
+     * Рядки й імена в лапках вирізаються (їх вміст не виконується), а в решті не має бути
+     * вибірки з інших таблиць (… SELECT, UNION=), звичайних коментарів, у яких можна сховати
+     * текст від цієї перевірки, шляхів на диску і рушіїв, що читають чужі таблиці, файли чи сервери.
+     * Версійні коментарі «/*!50100 …» MySQL виконує, тож їх вміст перевіряється як звичайний текст.
+     */
+    private static function is_safe_create( $rest ) {
+        $text = preg_replace( "/'(?:[^'\\\\]++|\\\\.|'')*+'|\"(?:[^\"\\\\]++|\\\\.|\"\")*+\"|`(?:[^`]++|``)*+`/s", '', $rest );
+
+        if ( null === $text || preg_match( '#/\*(?!!)|\#|--|\b(?:SELECT|TABLE|UNION|CONNECTION|DIRECTORY)\b#i', $text ) ) {
+            return false;
+        }
+
+        // Кожне слово ENGINE має одразу продовжуватися назвою рушія без лапок: назва в лапках
+        // (ENGINE='FEDERATED') вирізалася б разом з ними, а за коментарем («ENGINE = /*!*/ CONNECT»)
+        // її не було б видно. ENGINE_ATTRIBUTE, SECONDARY_ENGINE — інші слова (\b не між «_» і літерою).
+        $words = preg_match_all( '/\bENGINE\b/i', $text );
+        $named = preg_match_all( '/\bENGINE\b\s*=?\s*(\w+)/i', $text, $engines );
+        if ( $words !== $named ) {
+            return false;
+        }
+
+        foreach ( $engines[1] as $engine ) {
+            if ( ! in_array( strtolower( $engine ), self::ENGINES, true ) ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Рядки значень INSERT з позиції $p: «('…',NULL,…),\n(…);» — лише рядки в лапках і NULL,
+     * як їх пише ESB_Backup::sql_value(), кожен рядок значень — окремий рядок тексту.
+     * Без регулярних виразів: частина дампу — до 16 МБ, і PCRE на такому тексті впирається в ліміти.
+     */
+    private static function is_literal_rows( $sql, $p ) {
+        $len = strlen( $sql );
+
+        while ( true ) {
+            if ( $p >= $len || '(' !== $sql[ $p++ ] ) {
+                return false;
+            }
+
+            // Значення рядка через кому до «)».
+            while ( true ) {
+                if ( 'NULL' === substr( $sql, $p, 4 ) ) {
+                    $p += 4;
+                } elseif ( $p < $len && "'" === $sql[ $p ] ) {
+                    $p++;
+                    while ( true ) {
+                        if ( $p >= $len ) {
+                            return false;
+                        }
+                        // Справжнє перенесення рядка в значенні неможливе: ESB_Backup його екранує.
+                        $p += strcspn( $sql, "'\\\n", $p );
+                        if ( $p >= $len || "\n" === $sql[ $p ] ) {
+                            return false;
+                        }
+                        if ( '\\' === $sql[ $p ] ) {
+                            // «\» перед справжнім перенесенням — теж справжнє перенесення в значенні.
+                            if ( "\n" === substr( $sql, $p + 1, 1 ) ) {
+                                return false;
+                            }
+                            $p += 2;
+                        } elseif ( "'" === substr( $sql, $p + 1, 1 ) ) {
+                            $p += 2; // «''» — лапка всередині рядка
+                        } else {
+                            $p++;
+                            break;
+                        }
+                    }
+                } else {
+                    return false;
+                }
+
+                $next = $p < $len ? $sql[ $p++ ] : '';
+                if ( ')' === $next ) {
+                    break;
+                }
+                if ( ',' !== $next ) {
+                    return false;
+                }
+            }
+
+            if ( ",\n" === substr( $sql, $p, 2 ) ) {
+                $p += 2;
+                continue;
+            }
+
+            return ';' === substr( $sql, $p );
+        }
     }
 
     /**
@@ -1131,7 +1251,9 @@ class ESB_Restore {
         if ( $state['has_db'] ) {
             // Розклад — це налаштування сайту зараз, а не на момент копії: запам'ятовуємо його до підміни.
             // swap_tables() зберігає стан перед RENAME, тож і повтор після обриву візьме ці значення.
-            if ( ! isset( $state['schedule'] ) ) {
+            // Якщо підміна вже почалася без них (відновлення, почате попередньою версією), у базі вже
+            // розклад з копії — тоді його не чіпаємо.
+            if ( ! isset( $state['schedule'] ) && empty( $state['db']['swapping'] ) ) {
                 $state['schedule'] = array(
                     ESB_Schedule::OPTION      => get_option( ESB_Schedule::OPTION ),
                     ESB_Schedule::LAST_OPTION => get_option( ESB_Schedule::LAST_OPTION ),
@@ -1146,13 +1268,20 @@ class ESB_Restore {
         wp_cache_flush();
 
         if ( $state['has_db'] ) {
-            foreach ( $state['schedule'] as $option => $value ) {
-                if ( false === $value ) {
-                    delete_option( $option );
-                } else {
-                    update_option( $option, $value, false );
+            // У базі з копії лишилася позначка завдання, яке саме знімало цю копію; воно давно завершене.
+            delete_option( ESB_Backup::ACTIVE_OPTION );
+
+            if ( isset( $state['schedule'] ) ) {
+                foreach ( $state['schedule'] as $option => $value ) {
+                    if ( false === $value ) {
+                        delete_option( $option );
+                    } else {
+                        update_option( $option, $value, false );
+                    }
                 }
             }
+
+            // Події WP-Cron теж прийшли з копії — узгоджуємо їх із налаштуваннями розкладу.
             ESB_Schedule::reschedule();
         }
 

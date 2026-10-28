@@ -102,6 +102,11 @@ class ESB_Admin {
      * Посилання «Налаштування» в рядку плагіна на сторінці «Плагіни» — першим, як заведено.
      */
     public static function action_links( $links ) {
+        // Адміністратор підсайту мультисайту бачить плагін у списку, але сторінка йому недоступна.
+        if ( ! current_user_can( self::capability() ) ) {
+            return $links;
+        }
+
         array_unshift(
             $links,
             sprintf( '<a href="%s">%s</a>', esc_url( admin_url( 'tools.php?page=' . self::PAGE ) ), esc_html__( 'Налаштування', 'easy-site-backup' ) )
@@ -145,6 +150,7 @@ class ESB_Admin {
                     'uploadProgress' => __( 'Завантаження: %1$s з %2$s МБ', 'easy-site-backup' ),
                     'uploadCheck'    => __( 'Перевірка архіву…', 'easy-site-backup' ),
                     'uploadDone'     => __( 'Архів завантажено. Оновлюю список…', 'easy-site-backup' ),
+                    /* translators: %s: дата копії */
                     'restoreConfirm' => __( "Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
                 ),
             )
