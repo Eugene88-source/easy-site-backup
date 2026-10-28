@@ -48,6 +48,16 @@ class ESB_Restore {
     const MANIFEST_MAX_BYTES = 16 * MB_IN_BYTES;
 
     /**
+     * Що може йти після назви таблиці в інструкціях дампу: [текст, чи це вся решта інструкції].
+     * Без цього пройшло б, наприклад, «INSERT INTO `t` SELECT … FROM інша_база».
+     */
+    const STATEMENT_TAILS = array(
+        'DROP TABLE IF EXISTS' => array( ';', true ),
+        'CREATE TABLE'         => array( ' (', false ),
+        'INSERT INTO'          => array( " VALUES\n", false ),
+    );
+
+    /**
      * Фази, що не діляться на частини (див. ESB_Backup::FRESH_STEP_PHASES). db_extract — заради
      * архівів до 0.5.1, де весь дамп лежить одним database.sql.
      */
@@ -80,6 +90,12 @@ class ESB_Restore {
 
         if ( ! function_exists( 'inflate_init' ) ) {
             return new WP_Error( 'esb_zlib', __( 'На сервері немає PHP-розширення zlib.', 'easy-site-backup' ) );
+        }
+
+        // Файли з архіву, завантаженого з комп'ютера, — це довільний PHP-код. Там, де встановлювати
+        // плагіни й теми заборонено (DISALLOW_FILE_MODS), відновлення не має бути обхідним шляхом.
+        if ( ! empty( $job->data['uploaded'] ) && 'db' !== $job->data['type'] && defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS ) {
+            return new WP_Error( 'esb_file_mods', __( 'На цьому сайті заборонено змінювати файли (DISALLOW_FILE_MODS), тож відновити файли з архіву, завантаженого з комп\'ютера, не можна. Відновлення з копій, створених на цьому сайті, працює як звичайно.', 'easy-site-backup' ) );
         }
 
         if ( ESB_Backup::active_job() ) {
@@ -199,12 +215,17 @@ class ESB_Restore {
         }
 
         try {
+            // Стан перечитуємо під блокуванням: його міг змінити попередній крок.
             $state = self::load();
-            if ( 'running' === $state['status'] ) {
+            if ( $state && 'running' === $state['status'] ) {
                 self::run( $state );
             }
         } finally {
             self::unlock();
+        }
+
+        if ( ! $state ) {
+            return new WP_Error( 'esb_not_found', __( 'Відновлення не знайдено.', 'easy-site-backup' ) );
         }
 
         $state['busy'] = false;
@@ -656,7 +677,10 @@ class ESB_Restore {
         }
 
         // Дозволено лише те, що пише ESB_Backup: так з архіву не виконається довільний SQL.
-        if ( ! preg_match( '/^(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) (`(?:[^`]|``)+`)/', $sql, $m ) ) {
+        // Перевіряємо й те, що йде після назви таблиці (див. STATEMENT_TAILS).
+        if ( ! preg_match( '/^(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) (`(?:[^`]|``)+`)/', $sql, $m )
+            || ! self::has_tail( $sql, strlen( $m[0] ), self::STATEMENT_TAILS[ $m[1] ] )
+        ) {
             throw new RuntimeException( __( 'Невідома інструкція в дампі бази даних.', 'easy-site-backup' ) );
         }
 
@@ -701,6 +725,17 @@ class ESB_Restore {
         }
 
         self::query( $sql );
+    }
+
+    /**
+     * Після назви таблиці інструкція продовжується саме так, як її пише ESB_Backup.
+     *
+     * @param array $tail Елемент STATEMENT_TAILS.
+     */
+    private static function has_tail( $sql, $offset, array $tail ) {
+        list( $text, $whole ) = $tail;
+
+        return $text === ( $whole ? substr( $sql, $offset ) : substr( $sql, $offset, strlen( $text ) ) );
     }
 
     /**
@@ -1094,12 +1129,32 @@ class ESB_Restore {
 
     private static function finalize( array &$state ) {
         if ( $state['has_db'] ) {
+            // Розклад — це налаштування сайту зараз, а не на момент копії: запам'ятовуємо його до підміни.
+            // swap_tables() зберігає стан перед RENAME, тож і повтор після обриву візьме ці значення.
+            if ( ! isset( $state['schedule'] ) ) {
+                $state['schedule'] = array(
+                    ESB_Schedule::OPTION      => get_option( ESB_Schedule::OPTION ),
+                    ESB_Schedule::LAST_OPTION => get_option( ESB_Schedule::LAST_OPTION ),
+                );
+            }
+
             self::swap_tables( $state );
             self::log( $state, 'базу даних замінено' );
         }
 
         @unlink( self::sql_path( $state ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
         wp_cache_flush();
+
+        if ( $state['has_db'] ) {
+            foreach ( $state['schedule'] as $option => $value ) {
+                if ( false === $value ) {
+                    delete_option( $option );
+                } else {
+                    update_option( $option, $value, false );
+                }
+            }
+            ESB_Schedule::reschedule();
+        }
 
         $state['status']   = 'done';
         $state['finished'] = time();

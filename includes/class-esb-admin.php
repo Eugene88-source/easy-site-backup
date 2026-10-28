@@ -53,11 +53,19 @@ class ESB_Admin {
         add_action( 'admin_post_esb_recheck_exposure', array( __CLASS__, 'handle_recheck_exposure' ) );
     }
 
+    /**
+     * Право на всі дії плагіна. На мультисайті manage_options мають адміністратори кожного
+     * підсайту, а копія містить таблиці всієї мережі і відновлює файли всієї мережі, тож — лише суперадмін.
+     */
+    public static function capability() {
+        return is_multisite() ? 'manage_network_options' : 'manage_options';
+    }
+
     public static function add_page() {
         self::$hook = add_management_page(
             __( 'Easy Site Backup', 'easy-site-backup' ),
             __( 'Easy Site Backup', 'easy-site-backup' ),
-            'manage_options',
+            self::capability(),
             self::PAGE,
             array( __CLASS__, 'render_page' )
         );
@@ -127,18 +135,17 @@ class ESB_Admin {
                     'cancelling'     => __( 'Скасування…', 'easy-site-backup' ),
                     /* translators: %d: кількість вибраних копій */
                     'bulkConfirm'    => __( 'Видалити вибрані резервні копії (%d)?', 'easy-site-backup' ),
-                    /* translators: %s: дата копії */
                     /* translators: %d: відсоток */
                     'downloadProgress' => __( 'Завантаження… %d%%', 'easy-site-backup' ),
                     'downloadDone'     => __( 'Завантажено', 'easy-site-backup' ),
                     'downloadFailed'   => __( 'Не вдалося завантажити архів: ', 'easy-site-backup' ),
-                    'uploadSelect'   => __('Виберіть файл архіву (.zip).', 'easy-site-backup' ),
+                    'uploadSelect'   => __( 'Виберіть файл архіву (.zip).', 'easy-site-backup' ),
                     'uploadStart'    => __( 'Підготовка…', 'easy-site-backup' ),
                     /* translators: 1: завантажено МБ, 2: усього МБ */
                     'uploadProgress' => __( 'Завантаження: %1$s з %2$s МБ', 'easy-site-backup' ),
                     'uploadCheck'    => __( 'Перевірка архіву…', 'easy-site-backup' ),
                     'uploadDone'     => __( 'Архів завантажено. Оновлюю список…', 'easy-site-backup' ),
-                    'restoreConfirm' => __("Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
+                    'restoreConfirm' => __( "Відновити сайт із копії від %s?\n\nПоточні база даних і файли буде замінено вмістом копії. Файли й таблиці, яких немає в копії, залишаться. Скасувати відновлення буде неможливо.\n\nРадимо спершу створити свіжу резервну копію.", 'easy-site-backup' ),
                 ),
             )
         );
@@ -158,7 +165,7 @@ class ESB_Admin {
     }
 
     public static function render_page() {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::capability() ) ) {
             return;
         }
 
@@ -795,7 +802,7 @@ class ESB_Admin {
     }
 
     private static function check_ajax() {
-        if ( ! check_ajax_referer( 'esb_ajax', 'nonce', false ) || ! current_user_can( 'manage_options' ) ) {
+        if ( ! check_ajax_referer( 'esb_ajax', 'nonce', false ) || ! current_user_can( self::capability() ) ) {
             wp_send_json_error( array( 'message' => __( 'Недостатньо прав.', 'easy-site-backup' ) ), 403 );
         }
     }
@@ -989,7 +996,7 @@ class ESB_Admin {
     }
 
     private static function check_access( $nonce_action ) {
-        if ( ! current_user_can( 'manage_options' ) ) {
+        if ( ! current_user_can( self::capability() ) ) {
             wp_die( esc_html__( 'Недостатньо прав.', 'easy-site-backup' ), '', array( 'response' => 403 ) );
         }
 

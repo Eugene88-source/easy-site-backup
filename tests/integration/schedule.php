@@ -99,6 +99,9 @@ do {
     $state = ESB_Restore::step( $restore['token'] );
 } while ( 'running' === $state['status'] );
 check( 'done' === $state['status'], 'restore finished' );
+// Копію зроблено з notify=always; перед відновленням стало failure — так і має лишитися.
+check( 'failure' === ESB_Schedule::settings()['notify'], 'restore keeps schedule settings from before the restore' );
+check( wp_next_scheduled( ESB_Schedule::HOOK ) === ESB_Schedule::next_run( ESB_Schedule::settings() ), 'schedule rescheduled after restore' );
 
 echo "== deactivate\n";
 ESB_Schedule::deactivate();

@@ -238,6 +238,15 @@ if ( PHP_INT_SIZE >= 8 ) {
     echo "SKIP large-file checks: 32-bit PHP\n";
 }
 
+// Тимчасовий файл видалено посеред запису (стан каже, що в ньому вже є дані): писати далі не можна,
+// інакше ftruncate() доповнив би його нулями.
+try {
+    new ESB_Zip_Writer( "$dir/gone.zip", "$dir/gone.cd", array( 'size' => 0, 'cd_size' => 100, 'entries' => 1 ) );
+    check( false, 'writer refuses file shorter than saved state' );
+} catch ( RuntimeException $e ) {
+    check( false !== strpos( $e->getMessage(), 'gone.cd' ), 'writer refuses file shorter than saved state' );
+}
+
 array_map( 'unlink', glob( "$dir/*" ) );
 rmdir( $dir );
 

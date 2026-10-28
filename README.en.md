@@ -108,7 +108,9 @@ The plugin updates from this repository's GitHub Releases, like a regular plugin
 5. The `Release` GitHub Action checks that the tag matches the version, builds `easy-site-backup.zip` and publishes the release. If a release with this tag was created manually, the archive is attached to it.
 
 ## Security
-- All actions are available only to users with the `manage_options` capability and are protected by nonces.
+- All actions are available only to users with the `manage_options` capability (on multisite — only to super admins, since a backup contains the tables of the whole network) and are protected by nonces.
+- If `DISALLOW_FILE_MODS` is set in `wp-config.php`, files from an archive uploaded from a computer are not restored — otherwise this would be a way to put arbitrary PHP code on the site. The database from such an archive can still be restored.
+- Restore executes only statements in exactly the form the plugin writes them (`DROP TABLE IF EXISTS`, `CREATE TABLE … (`, `INSERT INTO … VALUES`), and only for tables listed in the backup.
 - **Storage outside the site's public folder.** The first time the plugin page is opened, backups are moved to an `esb-backups-<site code>` folder next to the public folder (one level above `public_html`) if the host allows writing there. There they have no web address, so no web server can serve them — Apache, Nginx, a hosting proxy or Cloudflare, however they are configured. The storage path is stored in the pointer file `wp-content/uploads/esb-backups/location.php` (not in the database — restoring the database won't affect it; the file shows nothing over the web). If writing above the public folder is not allowed, backups stay in `wp-content/uploads/esb-backups/`.
 - The storage folder is protected by `.htaccess` and `index.php`; backup folder names are random.
 - No file in the storage has a fixed address: archives and the database dump extracted during restore live in backup folders with random names, and the restore state is in a file with a random name.
@@ -142,6 +144,14 @@ Integration tests need the plugin to be active and the site to be reachable (res
 - Free disk space is checked before a backup (with headroom for the size of all files) and before a restore (database dump + the largest file). Space for MySQL temporary tables during restore is not checked — MySQL data may live on another disk.
 
 ## Changelog
+
+### 1.1.3
+- On multisite the plugin page is available only to super admins: a sub-site administrator can no longer download or restore the database of the whole network.
+- Files from an archive uploaded from a computer are not restored when `DISALLOW_FILE_MODS` is set.
+- Stricter dump check during restore: a forged archive can no longer run `INSERT … SELECT` to copy data from other tables or databases.
+- A backup step interrupted at the very last moment could mark the backup as finished with a corrupted archive. The state is now saved before temporary files are removed, and archive writing stops with an error if an intermediate file has disappeared.
+- Tables without an integer primary key are dumped in unique-key order, so row batches can no longer overlap or skip rows.
+- Restoring the database no longer rolls the schedule settings back to the moment of the backup: the schedule stays as it was before the restore.
 
 ### 1.1.2
 - Extraction stops as soon as an entry's data exceeds the size declared in the archive: a forged archive (a "ZIP bomb") can no longer fill the disk, either when uploading from a computer or during restore.

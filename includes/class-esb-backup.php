@@ -541,6 +541,7 @@ class ESB_Backup {
 
             $state['started'] = true;
             $state['pk']      = self::numeric_primary_key( $table );
+            $state['order']   = $state['pk'] ? array() : self::unique_key_columns( $table );
             $state['key']     = null;
             $state['offset']  = 0;
         }
@@ -559,7 +560,10 @@ class ESB_Backup {
 
             $sql = "SELECT * FROM {$quoted}{$where} ORDER BY {$pk} LIMIT " . self::ROWS_PER_QUERY;
         } else {
-            $sql = sprintf( 'SELECT * FROM %s LIMIT %d, %d', $quoted, $state['offset'], self::ROWS_PER_QUERY );
+            // Без ORDER BY порядок рядків між запитами не гарантовано — порції могли б перекриватися
+            // чи пропускати рядки. Упорядковуємо за унікальним ключем, якщо він є.
+            $order = empty( $state['order'] ) ? '' : ' ORDER BY ' . implode( ', ', array_map( array( __CLASS__, 'quote' ), $state['order'] ) );
+            $sql   = sprintf( 'SELECT * FROM %s%s LIMIT %d, %d', $quoted, $order, $state['offset'], self::ROWS_PER_QUERY );
         }
 
         $rows = (array) $wpdb->get_results( $sql, ARRAY_A );
@@ -609,6 +613,36 @@ class ESB_Backup {
         // phpcs:enable
 
         return preg_match( '/^(tiny|small|medium|big)?int\b/i', (string) $type ) ? $column : null;
+    }
+
+    /**
+     * @return string[] Колонки первинного ключа або іншого унікального ключа без NULL; порожньо — такого немає.
+     */
+    private static function unique_key_columns( $table ) {
+        global $wpdb;
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- назву таблиці екрановано в quote().
+        $rows = (array) $wpdb->get_results( 'SHOW KEYS FROM ' . self::quote( $table ), ARRAY_A );
+        $keys = array();
+
+        foreach ( $rows as $row ) {
+            // У стовпці Null — «YES», якщо колонка допускає NULL: тоді ключ не робить рядки унікальними.
+            if ( '0' !== (string) $row['Non_unique'] || '' !== (string) $row['Null'] ) {
+                $keys[ $row['Key_name'] ] = false;
+            } elseif ( ! isset( $keys[ $row['Key_name'] ] ) || false !== $keys[ $row['Key_name'] ] ) {
+                $keys[ $row['Key_name'] ][ (int) $row['Seq_in_index'] ] = $row['Column_name'];
+            }
+        }
+
+        $keys = array_filter( $keys );
+        if ( ! $keys ) {
+            return array();
+        }
+
+        $columns = isset( $keys['PRIMARY'] ) ? $keys['PRIMARY'] : reset( $keys );
+        ksort( $columns );
+
+        return array_values( $columns );
     }
 
     private static function quote( $name ) {
@@ -889,14 +923,17 @@ class ESB_Backup {
             $writer->close();
         }
 
-        self::remove_temp_files( $job );
         clearstatcache( true, $job->path( ESB_Storage::ARCHIVE ) );
 
         $job->data['size']     = filesize( $job->path( ESB_Storage::ARCHIVE ) );
         $job->data['status']   = 'done';
         $job->data['finished'] = time();
-        $job->log( 'Готово. Розмір архіву: ' . size_format( $job->size(), 1 ) );
         $job->save();
+
+        // Видаляємо лише після збереження стану: якщо крок переб'ють раніше, повтор допише
+        // центральний каталог наново, а без archive.cd він був би зіпсований.
+        self::remove_temp_files( $job );
+        $job->log( 'Готово. Розмір архіву: ' . size_format( $job->size(), 1 ) );
 
         delete_option( self::ACTIVE_OPTION );
 

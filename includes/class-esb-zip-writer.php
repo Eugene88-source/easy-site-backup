@@ -379,9 +379,18 @@ class ESB_Zip_Writer {
         // 'c+b' не обрізає наявний файл і створює новий, якщо його немає.
         $fh = @fopen( $path, 'c+b' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
-        if ( ! $fh || ! ftruncate( $fh, $size ) || 0 !== fseek( $fh, $size ) ) {
+        if ( ! $fh ) {
             /* translators: %s: назва файлу */
             throw new RuntimeException( sprintf( __( 'Не вдалося відкрити файл %s.', 'easy-site-backup' ), basename( $path ) ) );
+        }
+
+        // Файл коротший за збережений стан (його видалили чи обрізали): ftruncate() доповнив би
+        // його нулями, і архів вийшов би зіпсованим без жодної помилки.
+        $stat = fstat( $fh );
+        if ( ! $stat || $stat['size'] < $size || ! ftruncate( $fh, $size ) || 0 !== fseek( $fh, $size ) ) {
+            fclose( $fh );
+            /* translators: %s: назва файлу */
+            throw new RuntimeException( sprintf( __( 'Файл %s пошкоджено або видалено посеред запису.', 'easy-site-backup' ), basename( $path ) ) );
         }
 
         return $fh;

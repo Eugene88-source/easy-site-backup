@@ -148,6 +148,41 @@ check( null !== ESB_Job::load( $fresh->id ), 'fresh upload kept' );
 check( null !== ESB_Job::load( $uploaded->id ), 'finished uploaded copy kept' );
 ESB_Storage::delete_dir( $fresh->id );
 
+echo "== tampered dump: only statements ESB_Backup writes\n";
+// Підроблений архів: INSERT … SELECT скопіював би дані з інших таблиць чи баз.
+global $wpdb;
+$evil_table = $wpdb->base_prefix . 'esb_evil';
+$evil_dir   = get_temp_dir() . 'esb-evil-' . getmypid();
+wp_mkdir_p( $evil_dir );
+$writer = new ESB_Zip_Writer( "$evil_dir/evil.zip", "$evil_dir/evil.cd", array( 'size' => 0, 'cd_size' => 0, 'entries' => 0 ) );
+$writer->add_string( 'database-001.sql', "CREATE TABLE `{$evil_table}` (\n  `v` text\n);\nINSERT INTO `{$evil_table}` SELECT user_pass FROM `{$wpdb->users}`;\n" );
+$writer->add_string(
+    'manifest.json',
+    wp_json_encode(
+        array(
+            'type'         => 'db',
+            'home_url'     => home_url(),
+            'table_prefix' => $wpdb->base_prefix,
+            'tables'       => array( $evil_table ),
+            'db_parts'     => 1,
+        )
+    )
+);
+$writer->finish();
+$writer->close();
+
+$evil = ESB_Upload::start( 'evil.zip', filesize( "$evil_dir/evil.zip" ) );
+ESB_Upload::append( $evil->id, 0, "$evil_dir/evil.zip" );
+$evil   = ESB_Upload::finish( $evil->id );
+$state  = ESB_Restore::start( $evil->id );
+$status = esb_test_restore_steps( $state['token'] );
+check( $status && 'failed' === $status['status'] && false !== strpos( $status['error'], 'Невідома інструкція' ), 'INSERT … SELECT rejected: ' . ( $status ? $status['error'] : '-' ) );
+check( array() === esb_test_temp_tables(), 'no temporary tables left' );
+ESB_Restore::mark_seen();
+ESB_Storage::delete_dir( $evil->id );
+array_map( 'unlink', glob( "$evil_dir/*" ) );
+rmdir( $evil_dir );
+
 echo "== restore from uploaded copy\n";
 $state  = ESB_Restore::start( $uploaded->id );
 $status = esb_test_restore_steps( $state['token'] );

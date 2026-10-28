@@ -226,10 +226,8 @@ class ESB_Updater {
     }
 
     /**
-     * @return array|null Останній реліз: version, package, url, notes, date.
-     */
-    /**
      * @param bool $fresh Запитати GitHub наново, оминаючи кеш.
+     * @return array|null Останній реліз: version, package, url, notes, date.
      */
     private static function latest_release( $fresh = false ) {
         $cached = $fresh ? false : get_site_transient( self::CACHE );
